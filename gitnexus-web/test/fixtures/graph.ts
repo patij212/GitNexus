@@ -4,6 +4,14 @@
  */
 
 import type { GraphNode, GraphRelationship } from '../../src/core/graph/types';
+import { createKnowledgeGraph } from '../../src/core/graph/graph';
+import type { KnowledgeGraph } from '../../src/core/graph/types';
+
+export interface DeterministicGraphFixtureOptions {
+  fileCount?: number;
+  functionsPerFile?: number;
+  includeCalls?: boolean;
+}
 
 export function createFileNode(name: string, filePath?: string): GraphNode {
   return {
@@ -67,4 +75,34 @@ export function createContainsRelationship(sourceId: string, targetId: string): 
     confidence: 1.0,
     reason: '',
   };
+}
+
+export function createDeterministicKnowledgeGraphFixture(
+  options: DeterministicGraphFixtureOptions = {},
+): KnowledgeGraph {
+  const fileCount = options.fileCount ?? 2;
+  const functionsPerFile = options.functionsPerFile ?? 2;
+  const includeCalls = options.includeCalls ?? true;
+  const graph = createKnowledgeGraph();
+  let previousFunctionId: string | null = null;
+
+  for (let fileIndex = 0; fileIndex < fileCount; fileIndex += 1) {
+    const filePath = `src/module-${fileIndex}.ts`;
+    const file = createFileNode(`module-${fileIndex}.ts`, filePath);
+    graph.addNode(file);
+
+    for (let functionIndex = 0; functionIndex < functionsPerFile; functionIndex += 1) {
+      const line = 1 + functionIndex * 20;
+      const fn = createFunctionNode(`fn${fileIndex}_${functionIndex}`, filePath, line);
+      graph.addNode(fn);
+      graph.addRelationship(createContainsRelationship(file.id, fn.id));
+
+      if (includeCalls && previousFunctionId) {
+        graph.addRelationship(createCallsRelationship(previousFunctionId, fn.id));
+      }
+      previousFunctionId = fn.id;
+    }
+  }
+
+  return graph;
 }

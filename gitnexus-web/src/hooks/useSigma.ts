@@ -9,6 +9,7 @@ import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { NodeAnimation } from './useAppState';
 import { GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
 import { resolveGraphEdgeVisual, resolveGraphNodeVisual } from '../lib/graph-visual-state';
+import { GRAPH_PERF_METRICS, recordGraphPerf, type GraphPerfObserver } from '../lib/graph-perf';
 
 interface UseSigmaOptions {
   onNodeClick?: (nodeId: string) => void;
@@ -18,6 +19,7 @@ interface UseSigmaOptions {
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
+  perfObserver?: GraphPerfObserver;
 }
 
 interface UseSigmaReturn {
@@ -231,6 +233,21 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     optionsRef.current = options;
   });
 
+  const recordSigmaRefresh = useCallback((label: string) => {
+    recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.sigmaRefresh, { label });
+  }, []);
+
+  const refreshSigma = useCallback(
+    (label: string) => {
+      const sigma = sigmaRef.current;
+      if (!sigma) return;
+
+      sigma.refresh();
+      recordSigmaRefresh(label);
+    },
+    [recordSigmaRefresh],
+  );
+
   const clearLayoutTimers = useCallback(() => {
     if (layoutTimeoutRef.current) {
       clearTimeout(layoutTimeoutRef.current);
@@ -255,12 +272,12 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       if (runNoverlap && graph.order > 1) {
         noverlap.assign(graph, getNoverlapSettings(graph.order));
-        sigmaRef.current?.refresh();
+        refreshSigma('noverlap');
       }
 
       setIsLayoutRunning(false);
     },
-    [clearLayoutTimers],
+    [clearLayoutTimers, refreshSigma],
   );
 
   useEffect(() => {
@@ -268,12 +285,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
-    sigmaRef.current?.refresh();
+    refreshSigma('visual-options');
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    refreshSigma,
   ]);
 
   // Animation loop for node effects
@@ -287,7 +305,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     }
 
     const animate = () => {
-      sigmaRef.current?.refresh();
+      refreshSigma('animation');
       animationFrameRef.current = requestAnimationFrame(animate);
     };
 
@@ -299,23 +317,27 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         animationFrameRef.current = null;
       }
     };
-  }, [options.animatedNodes]);
+  }, [options.animatedNodes, refreshSigma]);
 
-  const setSelectedNode = useCallback((nodeId: string | null) => {
-    selectedNodeRef.current = nodeId;
-    setSelectedNodeState(nodeId);
+  const setSelectedNode = useCallback(
+    (nodeId: string | null) => {
+      selectedNodeRef.current = nodeId;
+      setSelectedNodeState(nodeId);
 
-    const sigma = sigmaRef.current;
-    if (!sigma) return;
+      const sigma = sigmaRef.current;
+      if (!sigma) return;
 
-    // Tiny camera nudge to force edge refresh (workaround for Sigma edge caching)
-    const camera = sigma.getCamera();
-    const currentRatio = camera.ratio;
-    // Imperceptible zoom change that triggers re-render
-    camera.animate({ ratio: currentRatio * 1.0001 }, { duration: 50 });
+      // Tiny camera nudge to force edge refresh (workaround for Sigma edge caching)
+      const camera = sigma.getCamera();
+      const currentRatio = camera.ratio;
+      // Imperceptible zoom change that triggers re-render
+      camera.animate({ ratio: currentRatio * 1.0001 }, { duration: 50 });
 
-    sigma.refresh();
-  }, []);
+      sigma.refresh();
+      recordSigmaRefresh('selection');
+    },
+    [recordSigmaRefresh],
+  );
 
   // Initialize Sigma ONCE
   useEffect(() => {
@@ -602,34 +624,41 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         runLayout(newGraph);
       } else {
         sigma.refresh();
+        recordSigmaRefresh('setGraph');
       }
       if (shouldResetCamera) {
         sigma.getCamera().animatedReset({ duration: 500 });
       }
     },
-    [clearLayoutTimers, runLayout, setSelectedNode],
+    [clearLayoutTimers, recordSigmaRefresh, runLayout, setSelectedNode],
   );
 
-  const focusNode = useCallback((nodeId: string) => {
-    const sigma = sigmaRef.current;
-    const graph = graphRef.current;
-    if (!sigma || !graph || !graph.hasNode(nodeId)) return;
+  const focusNode = useCallback(
+    (nodeId: string) => {
+      const sigma = sigmaRef.current;
+      const graph = graphRef.current;
+      if (!sigma || !graph || !graph.hasNode(nodeId)) return;
 
-    // Skip if already focused on this node (prevents double-click issues)
-    const alreadySelected = selectedNodeRef.current === nodeId;
+      // Skip if already focused on this node (prevents double-click issues)
+      const alreadySelected = selectedNodeRef.current === nodeId;
 
-    // Set selection state directly (without the camera nudge from setSelectedNode)
-    selectedNodeRef.current = nodeId;
-    setSelectedNodeState(nodeId);
+      // Set selection state directly (without the camera nudge from setSelectedNode)
+      selectedNodeRef.current = nodeId;
+      setSelectedNodeState(nodeId);
 
-    // Only animate camera if selecting a new node
-    if (!alreadySelected) {
-      const nodeAttrs = graph.getNodeAttributes(nodeId);
-      sigma.getCamera().animate({ x: nodeAttrs.x, y: nodeAttrs.y, ratio: 0.15 }, { duration: 400 });
-    }
+      // Only animate camera if selecting a new node
+      if (!alreadySelected) {
+        const nodeAttrs = graph.getNodeAttributes(nodeId);
+        sigma
+          .getCamera()
+          .animate({ x: nodeAttrs.x, y: nodeAttrs.y, ratio: 0.15 }, { duration: 400 });
+      }
 
-    sigma.refresh();
-  }, []);
+      sigma.refresh();
+      recordSigmaRefresh('focus');
+    },
+    [recordSigmaRefresh],
+  );
 
   const zoomIn = useCallback(() => {
     sigmaRef.current?.getCamera().animatedZoom({ duration: 200 });
@@ -665,8 +694,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   }, [clearLayoutTimers, finishLayoutRun]);
 
   const refreshHighlights = useCallback(() => {
-    sigmaRef.current?.refresh();
-  }, []);
+    refreshSigma('manual');
+  }, [refreshSigma]);
 
   return {
     containerRef,

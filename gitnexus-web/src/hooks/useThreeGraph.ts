@@ -24,6 +24,12 @@ import {
   resolveGraphEdgeVisual,
   resolveGraphNodeVisual,
 } from '../lib/graph-visual-state';
+import {
+  GRAPH_PERF_METRICS,
+  recordGraphPerf,
+  startGraphPerfMeasure,
+  type GraphPerfObserver,
+} from '../lib/graph-perf';
 import type { NodeAnimation } from './useAppState';
 
 export type ThreeGraphCameraMode = 'arcball' | 'firstPerson';
@@ -36,6 +42,7 @@ interface UseThreeGraphOptions {
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
+  perfObserver?: GraphPerfObserver;
 }
 
 interface UseThreeGraphReturn {
@@ -336,177 +343,198 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     [createNodeVisual],
   );
 
-  const updateSceneObjects = useCallback(() => {
-    const nodeMesh = nodeMeshRef.current;
-    const haloMesh = haloMeshRef.current;
-    const shellMesh = shellMeshRef.current;
-    const sparkPoints = sparkPointsRef.current;
-    const edgeLines = edgeLinesRef.current;
-    const graph = graphRef.current;
-    if (!nodeMesh || !haloMesh || !shellMesh || !sparkPoints || !edgeLines || !graph) return;
-
-    const now = Date.now();
-    const matrix = new THREE.Matrix4();
-    const color = new THREE.Color();
-    const edgeHighlightColor = new THREE.Color();
-    const nodes = nodesRef.current;
-    const billboardQuaternion = cameraRef.current?.quaternion || new THREE.Quaternion();
-    const sparkPositionAttr = sparkPoints.geometry.getAttribute(
-      'position',
-    ) as THREE.BufferAttribute;
-    const sparkColorAttr = sparkPoints.geometry.getAttribute('color') as THREE.BufferAttribute;
-    const sparkPositions = sparkPositionsRef.current;
-    const sparkColors = sparkColorsRef.current;
-
-    for (let i = 0; i < nodes.length; i += 1) {
-      const node = nodes[i];
-      const visual = getNodeVisual(node.id, node.attributes, now);
-      const x = node.x || 0;
-      const y = node.y || 0;
-      const z = node.z || 0;
-      matrix.compose(
-        new THREE.Vector3(x, y, z),
-        billboardQuaternion,
-        new THREE.Vector3(visual.scale, visual.scale, visual.scale),
+  const updateSceneObjects = useCallback(
+    (label = 'unspecified') => {
+      const finishSceneUpdate = startGraphPerfMeasure(
+        optionsRef.current.perfObserver,
+        GRAPH_PERF_METRICS.threeSceneUpdate,
+        { label },
       );
-      nodeMesh.setMatrixAt(i, matrix);
-      color.set(visual.color);
-      nodeMesh.setColorAt(i, color);
+      const nodeMesh = nodeMeshRef.current;
+      const haloMesh = haloMeshRef.current;
+      const shellMesh = shellMeshRef.current;
+      const sparkPoints = sparkPointsRef.current;
+      const edgeLines = edgeLinesRef.current;
+      const graph = graphRef.current;
+      if (!nodeMesh || !haloMesh || !shellMesh || !sparkPoints || !edgeLines || !graph) {
+        finishSceneUpdate();
+        return;
+      }
 
-      matrix.compose(
-        new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0),
-        billboardQuaternion,
-        new THREE.Vector3(visual.haloScale, visual.haloScale, visual.haloScale),
-      );
-      haloMesh.setMatrixAt(i, matrix);
-      color.set(brightenColor(visual.color, 1.45));
-      haloMesh.setColorAt(i, color);
+      const now = Date.now();
+      const matrix = new THREE.Matrix4();
+      const color = new THREE.Color();
+      const edgeHighlightColor = new THREE.Color();
+      const nodes = nodesRef.current;
+      const billboardQuaternion = cameraRef.current?.quaternion || new THREE.Quaternion();
+      const sparkPositionAttr = sparkPoints.geometry.getAttribute(
+        'position',
+      ) as THREE.BufferAttribute;
+      const sparkColorAttr = sparkPoints.geometry.getAttribute('color') as THREE.BufferAttribute;
+      const sparkPositions = sparkPositionsRef.current;
+      const sparkColors = sparkColorsRef.current;
 
-      matrix.compose(
-        new THREE.Vector3(x, y, z),
-        billboardQuaternion,
-        new THREE.Vector3(visual.shellScale, visual.shellScale, visual.shellScale),
-      );
-      shellMesh.setMatrixAt(i, matrix);
-      color.set(visual.shellColor);
-      shellMesh.setColorAt(i, color);
+      for (let i = 0; i < nodes.length; i += 1) {
+        const node = nodes[i];
+        const visual = getNodeVisual(node.id, node.attributes, now);
+        const x = node.x || 0;
+        const y = node.y || 0;
+        const z = node.z || 0;
+        matrix.compose(
+          new THREE.Vector3(x, y, z),
+          billboardQuaternion,
+          new THREE.Vector3(visual.scale, visual.scale, visual.scale),
+        );
+        nodeMesh.setMatrixAt(i, matrix);
+        color.set(visual.color);
+        nodeMesh.setColorAt(i, color);
 
+        matrix.compose(
+          new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0),
+          billboardQuaternion,
+          new THREE.Vector3(visual.haloScale, visual.haloScale, visual.haloScale),
+        );
+        haloMesh.setMatrixAt(i, matrix);
+        color.set(brightenColor(visual.color, 1.45));
+        haloMesh.setColorAt(i, color);
+
+        matrix.compose(
+          new THREE.Vector3(x, y, z),
+          billboardQuaternion,
+          new THREE.Vector3(visual.shellScale, visual.shellScale, visual.shellScale),
+        );
+        shellMesh.setMatrixAt(i, matrix);
+        color.set(visual.shellColor);
+        shellMesh.setColorAt(i, color);
+
+        if (sparkPositions && sparkColors) {
+          const sparkBase = i * 3;
+          sparkPositions[sparkBase] = x;
+          sparkPositions[sparkBase + 1] = y;
+          sparkPositions[sparkBase + 2] = z;
+          color.set(visual.visible ? mixColor(visual.color, '#ffffff', 0.18) : '#000000');
+          sparkColors[sparkBase] = color.r;
+          sparkColors[sparkBase + 1] = color.g;
+          sparkColors[sparkBase + 2] = color.b;
+        }
+      }
+      nodeMesh.instanceMatrix.needsUpdate = true;
+      if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
+      haloMesh.instanceMatrix.needsUpdate = true;
+      if (haloMesh.instanceColor) haloMesh.instanceColor.needsUpdate = true;
+      shellMesh.instanceMatrix.needsUpdate = true;
+      if (shellMesh.instanceColor) shellMesh.instanceColor.needsUpdate = true;
       if (sparkPositions && sparkColors) {
-        const sparkBase = i * 3;
-        sparkPositions[sparkBase] = x;
-        sparkPositions[sparkBase + 1] = y;
-        sparkPositions[sparkBase + 2] = z;
-        color.set(visual.visible ? mixColor(visual.color, '#ffffff', 0.18) : '#000000');
-        sparkColors[sparkBase] = color.r;
-        sparkColors[sparkBase + 1] = color.g;
-        sparkColors[sparkBase + 2] = color.b;
-      }
-    }
-    nodeMesh.instanceMatrix.needsUpdate = true;
-    if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
-    haloMesh.instanceMatrix.needsUpdate = true;
-    if (haloMesh.instanceColor) haloMesh.instanceColor.needsUpdate = true;
-    shellMesh.instanceMatrix.needsUpdate = true;
-    if (shellMesh.instanceColor) shellMesh.instanceColor.needsUpdate = true;
-    if (sparkPositions && sparkColors) {
-      sparkPositionAttr.needsUpdate = true;
-      sparkColorAttr.needsUpdate = true;
-    }
-
-    const positionAttr = edgeLines.geometry.getAttribute('position') as THREE.BufferAttribute;
-    const colorAttr = edgeLines.geometry.getAttribute('color') as THREE.BufferAttribute;
-    const positions = edgePositionsRef.current;
-    const colors = edgeColorsRef.current;
-    if (!positions || !colors) return;
-
-    const visibleTypes = visibleEdgeTypesRef.current;
-    const highlighted = highlightedRef.current;
-    const blastRadius = blastRadiusRef.current;
-    const currentSelected = selectedNodeRef.current;
-
-    for (let i = 0; i < linksRef.current.length; i += 1) {
-      const link = linksRef.current[i];
-      const source = resolveLinkNode(link.source);
-      const target = resolveLinkNode(link.target);
-      const sourceAttrs = source ? source.attributes : null;
-      const targetAttrs = target ? target.attributes : null;
-      const base = i * EDGE_CURVE_SEGMENTS * 6;
-      const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
-      const hiddenByType =
-        visibleTypes && link.attributes.relationType
-          ? !visibleTypes.includes(link.attributes.relationType as EdgeType)
-          : false;
-      const isVisible =
-        Boolean(source && target && sourceAttrs && targetAttrs) &&
-        !sourceAttrs?.hidden &&
-        !targetAttrs?.hidden &&
-        !hiddenByType;
-
-      if (!isVisible || !source || !target) {
-        positions.fill(0, base, base + edgeSpan);
-        colors.fill(0, base, base + edgeSpan);
-        continue;
+        sparkPositionAttr.needsUpdate = true;
+        sparkColorAttr.needsUpdate = true;
       }
 
-      const edgeVisual = resolveGraphEdgeVisual({
-        sourceId: link.sourceId,
-        targetId: link.targetId,
-        color: link.attributes.color || GRAPH_SURFACE_COLORS.fallbackEdge,
-        size: link.attributes.size || 1,
-        selectedNodeId: currentSelected,
-        highlightedNodeIds: highlighted,
-        blastRadiusNodeIds: blastRadius,
-      });
-      const edgeColor = edgeVisual.color;
-
-      color.set(edgeColor);
-      edgeHighlightColor.copy(color).lerp(WHITE_COLOR, 0.34);
-
-      SCRATCH_SOURCE.set(source.x || 0, source.y || 0, source.z || 0);
-      SCRATCH_TARGET.set(target.x || 0, target.y || 0, target.z || 0);
-      SCRATCH_MID.copy(SCRATCH_SOURCE).add(SCRATCH_TARGET).multiplyScalar(0.5);
-      SCRATCH_DIRECTION.copy(SCRATCH_TARGET).sub(SCRATCH_SOURCE);
-      const distance = Math.max(1, SCRATCH_DIRECTION.length());
-      SCRATCH_DIRECTION.divideScalar(distance);
-
-      SCRATCH_BEND.copy(link.curveVector);
-      SCRATCH_BEND.addScaledVector(SCRATCH_DIRECTION, -SCRATCH_BEND.dot(SCRATCH_DIRECTION));
-      if (SCRATCH_BEND.lengthSq() < 0.0001) {
-        SCRATCH_BEND.set(0, 1, 0).addScaledVector(SCRATCH_DIRECTION, -SCRATCH_DIRECTION.y);
+      const positionAttr = edgeLines.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const colorAttr = edgeLines.geometry.getAttribute('color') as THREE.BufferAttribute;
+      const positions = edgePositionsRef.current;
+      const colors = edgeColorsRef.current;
+      if (!positions || !colors) {
+        finishSceneUpdate();
+        return;
       }
-      SCRATCH_BEND.normalize();
 
-      const arcHeight = Math.min(125, Math.max(10, distance * link.curveMultiplier));
-      SCRATCH_CONTROL.copy(SCRATCH_MID).addScaledVector(SCRATCH_BEND, arcHeight);
+      const visibleTypes = visibleEdgeTypesRef.current;
+      const highlighted = highlightedRef.current;
+      const blastRadius = blastRadiusRef.current;
+      const currentSelected = selectedNodeRef.current;
 
-      for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
-        const startT = segment / EDGE_CURVE_SEGMENTS;
-        const endT = (segment + 1) / EDGE_CURVE_SEGMENTS;
-        setQuadraticPoint(SCRATCH_POINT_A, SCRATCH_SOURCE, SCRATCH_CONTROL, SCRATCH_TARGET, startT);
-        setQuadraticPoint(SCRATCH_POINT_B, SCRATCH_SOURCE, SCRATCH_CONTROL, SCRATCH_TARGET, endT);
+      for (let i = 0; i < linksRef.current.length; i += 1) {
+        const link = linksRef.current[i];
+        const source = resolveLinkNode(link.source);
+        const target = resolveLinkNode(link.target);
+        const sourceAttrs = source ? source.attributes : null;
+        const targetAttrs = target ? target.attributes : null;
+        const base = i * EDGE_CURVE_SEGMENTS * 6;
+        const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
+        const hiddenByType =
+          visibleTypes && link.attributes.relationType
+            ? !visibleTypes.includes(link.attributes.relationType as EdgeType)
+            : false;
+        const isVisible =
+          Boolean(source && target && sourceAttrs && targetAttrs) &&
+          !sourceAttrs?.hidden &&
+          !targetAttrs?.hidden &&
+          !hiddenByType;
 
-        const segmentBase = base + segment * 6;
-        positions[segmentBase] = SCRATCH_POINT_A.x;
-        positions[segmentBase + 1] = SCRATCH_POINT_A.y;
-        positions[segmentBase + 2] = SCRATCH_POINT_A.z;
-        positions[segmentBase + 3] = SCRATCH_POINT_B.x;
-        positions[segmentBase + 4] = SCRATCH_POINT_B.y;
-        positions[segmentBase + 5] = SCRATCH_POINT_B.z;
+        if (!isVisible || !source || !target) {
+          positions.fill(0, base, base + edgeSpan);
+          colors.fill(0, base, base + edgeSpan);
+          continue;
+        }
 
-        const distanceFromMiddle = Math.abs((segment + 0.5) / EDGE_CURVE_SEGMENTS - 0.5) * 2;
-        const segmentColor = distanceFromMiddle < 0.42 ? edgeHighlightColor : color;
-        colors[segmentBase] = segmentColor.r;
-        colors[segmentBase + 1] = segmentColor.g;
-        colors[segmentBase + 2] = segmentColor.b;
-        colors[segmentBase + 3] = segmentColor.r;
-        colors[segmentBase + 4] = segmentColor.g;
-        colors[segmentBase + 5] = segmentColor.b;
+        const edgeVisual = resolveGraphEdgeVisual({
+          sourceId: link.sourceId,
+          targetId: link.targetId,
+          color: link.attributes.color || GRAPH_SURFACE_COLORS.fallbackEdge,
+          size: link.attributes.size || 1,
+          selectedNodeId: currentSelected,
+          highlightedNodeIds: highlighted,
+          blastRadiusNodeIds: blastRadius,
+        });
+        const edgeColor = edgeVisual.color;
+
+        color.set(edgeColor);
+        edgeHighlightColor.copy(color).lerp(WHITE_COLOR, 0.34);
+
+        SCRATCH_SOURCE.set(source.x || 0, source.y || 0, source.z || 0);
+        SCRATCH_TARGET.set(target.x || 0, target.y || 0, target.z || 0);
+        SCRATCH_MID.copy(SCRATCH_SOURCE).add(SCRATCH_TARGET).multiplyScalar(0.5);
+        SCRATCH_DIRECTION.copy(SCRATCH_TARGET).sub(SCRATCH_SOURCE);
+        const distance = Math.max(1, SCRATCH_DIRECTION.length());
+        SCRATCH_DIRECTION.divideScalar(distance);
+
+        SCRATCH_BEND.copy(link.curveVector);
+        SCRATCH_BEND.addScaledVector(SCRATCH_DIRECTION, -SCRATCH_BEND.dot(SCRATCH_DIRECTION));
+        if (SCRATCH_BEND.lengthSq() < 0.0001) {
+          SCRATCH_BEND.set(0, 1, 0).addScaledVector(SCRATCH_DIRECTION, -SCRATCH_DIRECTION.y);
+        }
+        SCRATCH_BEND.normalize();
+
+        const arcHeight = Math.min(125, Math.max(10, distance * link.curveMultiplier));
+        SCRATCH_CONTROL.copy(SCRATCH_MID).addScaledVector(SCRATCH_BEND, arcHeight);
+
+        for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
+          const startT = segment / EDGE_CURVE_SEGMENTS;
+          const endT = (segment + 1) / EDGE_CURVE_SEGMENTS;
+          setQuadraticPoint(
+            SCRATCH_POINT_A,
+            SCRATCH_SOURCE,
+            SCRATCH_CONTROL,
+            SCRATCH_TARGET,
+            startT,
+          );
+          setQuadraticPoint(SCRATCH_POINT_B, SCRATCH_SOURCE, SCRATCH_CONTROL, SCRATCH_TARGET, endT);
+
+          const segmentBase = base + segment * 6;
+          positions[segmentBase] = SCRATCH_POINT_A.x;
+          positions[segmentBase + 1] = SCRATCH_POINT_A.y;
+          positions[segmentBase + 2] = SCRATCH_POINT_A.z;
+          positions[segmentBase + 3] = SCRATCH_POINT_B.x;
+          positions[segmentBase + 4] = SCRATCH_POINT_B.y;
+          positions[segmentBase + 5] = SCRATCH_POINT_B.z;
+
+          const distanceFromMiddle = Math.abs((segment + 0.5) / EDGE_CURVE_SEGMENTS - 0.5) * 2;
+          const segmentColor = distanceFromMiddle < 0.42 ? edgeHighlightColor : color;
+          colors[segmentBase] = segmentColor.r;
+          colors[segmentBase + 1] = segmentColor.g;
+          colors[segmentBase + 2] = segmentColor.b;
+          colors[segmentBase + 3] = segmentColor.r;
+          colors[segmentBase + 4] = segmentColor.g;
+          colors[segmentBase + 5] = segmentColor.b;
+        }
       }
-    }
 
-    positionAttr.needsUpdate = true;
-    colorAttr.needsUpdate = true;
-  }, [getNodeVisual]);
+      positionAttr.needsUpdate = true;
+      colorAttr.needsUpdate = true;
+      finishSceneUpdate();
+    },
+    [getNodeVisual],
+  );
 
   const frameNodes = useCallback((targetNodeId?: string) => {
     const camera = cameraRef.current;
@@ -855,7 +883,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       edgePositionsRef.current = edgePositions;
       edgeColorsRef.current = edgeColors;
 
-      updateSceneObjects();
+      updateSceneObjects('setGraph');
       if (shouldResetCamera) {
         frameNodes();
       }
@@ -915,7 +943,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   }, [frameNodes, setSelectedNode]);
 
   const refreshHighlights = useCallback(() => {
-    updateSceneObjects();
+    updateSceneObjects('refreshHighlights');
   }, [updateSceneObjects]);
 
   useEffect(() => {
@@ -923,7 +951,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
-    updateSceneObjects();
+    updateSceneObjects('visual-options');
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
@@ -1007,6 +1035,12 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       const mesh = nodeMeshRef.current;
       if (!mesh || pointerLock.isLocked) return null;
 
+      const finishPointerPick = startGraphPerfMeasure(
+        optionsRef.current.perfObserver,
+        GRAPH_PERF_METRICS.threePointerPick,
+        { label: event.type },
+      );
+
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -1016,9 +1050,13 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       for (const intersection of intersections) {
         if (intersection.instanceId === undefined) continue;
         const node = nodesRef.current[intersection.instanceId];
-        if (node && !node.attributes.hidden) return node.id;
+        if (node && !node.attributes.hidden) {
+          finishPointerPick();
+          return node.id;
+        }
       }
 
+      finishPointerPick();
       return null;
     };
 
@@ -1027,7 +1065,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (hoveredNodeRef.current !== nodeId) {
         hoveredNodeRef.current = nodeId;
         optionsRef.current.onNodeHover?.(nodeId);
-        updateSceneObjects();
+        updateSceneObjects('pointer-hover');
       }
       container.style.cursor = nodeId
         ? 'pointer'
@@ -1063,7 +1101,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (hoveredNodeRef.current !== null) {
         hoveredNodeRef.current = null;
         optionsRef.current.onNodeHover?.(null);
-        updateSceneObjects();
+        updateSceneObjects('pointer-leave');
       }
       container.style.cursor = cameraModeRef.current === 'arcball' ? 'grab' : 'crosshair';
     };
@@ -1085,6 +1123,9 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
     const animate = (time: number) => {
       animationFrameRef.current = requestAnimationFrame(animate);
+      recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.threeRafTick, {
+        label: cameraModeRef.current,
+      });
       const deltaSeconds = Math.min(0.05, (time - lastTimeRef.current) / 1000);
       lastTimeRef.current = time;
 
@@ -1104,7 +1145,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         arcball.update();
       }
 
-      updateSceneObjects();
+      updateSceneObjects('frame');
       renderer.render(scene, camera);
     };
 

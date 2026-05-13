@@ -10,6 +10,7 @@ import {
   getNodeTypeColor,
   type GraphColorMode,
 } from './constants';
+import { GRAPH_PERF_METRICS, startGraphPerfMeasure, type GraphPerfObserver } from './graph-perf';
 
 export type { GraphColorMode } from './constants';
 
@@ -59,6 +60,8 @@ export interface GraphologyOptions {
   agentFocusNodeIds?: Set<string>;
   citationNodeIds?: Set<string>;
   toolNodeIds?: Set<string>;
+  perfObserver?: GraphPerfObserver;
+  perfLabel?: string;
 }
 
 /**
@@ -283,6 +286,11 @@ export const knowledgeGraphToGraphology = (
   communityMemberships?: Map<string, number>,
   options: GraphologyOptions = {},
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
+  const finishConversionMeasure = startGraphPerfMeasure(
+    options.perfObserver,
+    GRAPH_PERF_METRICS.graphAdapterConversion,
+    { label: options.perfLabel },
+  );
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>({ multi: true });
   const nodeCount = knowledgeGraph.nodes.length;
   const colorMode = options.colorMode ?? 'type';
@@ -602,6 +610,7 @@ export const knowledgeGraphToGraphology = (
     }
   });
 
+  finishConversionMeasure();
   return graph;
 };
 
