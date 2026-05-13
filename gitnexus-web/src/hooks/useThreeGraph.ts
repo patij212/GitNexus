@@ -97,6 +97,28 @@ type NodeVisual = {
   shellColor: string;
 };
 
+type SceneDirtyFlags = {
+  nodeTransforms: boolean;
+  nodeVisuals: boolean;
+  sparkPositions: boolean;
+  sparkVisuals: boolean;
+  edgePositions: boolean;
+  edgeVisuals: boolean;
+  cameraBillboards: boolean;
+  animation: boolean;
+};
+
+const createSceneDirtyFlags = (dirty = false): SceneDirtyFlags => ({
+  nodeTransforms: dirty,
+  nodeVisuals: dirty,
+  sparkPositions: dirty,
+  sparkVisuals: dirty,
+  edgePositions: dirty,
+  edgeVisuals: dirty,
+  cameraBillboards: dirty,
+  animation: dirty,
+});
+
 const BACKGROUND_COLOR = GRAPH_SURFACE_COLORS.background;
 const EDGE_CURVE_SEGMENTS = 5;
 const WHITE_COLOR = new THREE.Color('#ffffff');
@@ -260,6 +282,10 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const edgeColorsRef = useRef<Float32Array | null>(null);
   const sparkPositionsRef = useRef<Float32Array | null>(null);
   const sparkColorsRef = useRef<Float32Array | null>(null);
+  const nodeVisualsRef = useRef<NodeVisual[]>([]);
+  const sceneDirtyRef = useRef<SceneDirtyFlags>(createSceneDirtyFlags(true));
+  const lastCameraQuaternionRef = useRef(new THREE.Quaternion());
+  const layoutRunningRef = useRef(false);
   const lastTimeRef = useRef(performance.now());
 
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
@@ -270,10 +296,46 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     optionsRef.current = options;
   }, [options]);
 
-  const setSelectedNode = useCallback((nodeId: string | null) => {
-    selectedNodeRef.current = nodeId;
-    setSelectedNodeState(nodeId);
+  const markSceneDirty = useCallback((flags: Partial<SceneDirtyFlags>) => {
+    Object.assign(sceneDirtyRef.current, flags);
   }, []);
+
+  const markSceneFullyDirty = useCallback(() => {
+    sceneDirtyRef.current = createSceneDirtyFlags(true);
+  }, []);
+
+  const markGraphVisualsDirty = useCallback(
+    (includeVisibility = false) => {
+      const dirtyFlags: Partial<SceneDirtyFlags> = {
+        nodeVisuals: true,
+        edgeVisuals: true,
+      };
+
+      if (includeVisibility) {
+        dirtyFlags.edgePositions = true;
+      }
+
+      markSceneDirty(dirtyFlags);
+    },
+    [markSceneDirty],
+  );
+
+  const markGraphPositionsDirty = useCallback(() => {
+    markSceneDirty({
+      nodeTransforms: true,
+      sparkPositions: true,
+      edgePositions: true,
+    });
+  }, [markSceneDirty]);
+
+  const setSelectedNode = useCallback(
+    (nodeId: string | null) => {
+      selectedNodeRef.current = nodeId;
+      setSelectedNodeState(nodeId);
+      markGraphVisualsDirty(false);
+    },
+    [markGraphVisualsDirty],
+  );
 
   const createNodeVisual = useCallback(
     (
@@ -345,11 +407,36 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
   const updateSceneObjects = useCallback(
     (label = 'unspecified') => {
+      const dirty = sceneDirtyRef.current;
+      if (animatedNodesRef.current.size > 0) {
+        dirty.animation = true;
+        dirty.nodeVisuals = true;
+      }
+
+      const camera = cameraRef.current;
+      if (camera && !lastCameraQuaternionRef.current.equals(camera.quaternion)) {
+        dirty.cameraBillboards = true;
+      }
+      if (dirty.nodeVisuals) {
+        dirty.nodeTransforms = true;
+        dirty.sparkVisuals = true;
+      }
+      if (dirty.cameraBillboards) {
+        dirty.nodeTransforms = true;
+      }
+      if (!Object.values(dirty).some(Boolean)) return;
+
       const finishSceneUpdate = startGraphPerfMeasure(
         optionsRef.current.perfObserver,
         GRAPH_PERF_METRICS.threeSceneUpdate,
         { label },
       );
+      const finishSceneUpdateCategory = (category: string): (() => void) =>
+        startGraphPerfMeasure(
+          optionsRef.current.perfObserver,
+          GRAPH_PERF_METRICS.threeSceneUpdate,
+          { label: `${label}:${category}` },
+        );
       const nodeMesh = nodeMeshRef.current;
       const haloMesh = haloMeshRef.current;
       const shellMesh = shellMeshRef.current;
@@ -361,96 +448,123 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         return;
       }
 
-      const now = Date.now();
-      const matrix = new THREE.Matrix4();
-      const color = new THREE.Color();
-      const edgeHighlightColor = new THREE.Color();
       const nodes = nodesRef.current;
-      const billboardQuaternion = cameraRef.current?.quaternion || new THREE.Quaternion();
-      const sparkPositionAttr = sparkPoints.geometry.getAttribute(
-        'position',
-      ) as THREE.BufferAttribute;
-      const sparkColorAttr = sparkPoints.geometry.getAttribute('color') as THREE.BufferAttribute;
+      const nodeVisuals = nodeVisualsRef.current;
       const sparkPositions = sparkPositionsRef.current;
       const sparkColors = sparkColorsRef.current;
 
-      for (let i = 0; i < nodes.length; i += 1) {
-        const node = nodes[i];
-        const visual = getNodeVisual(node.id, node.attributes, now);
-        const x = node.x || 0;
-        const y = node.y || 0;
-        const z = node.z || 0;
-        matrix.compose(
-          new THREE.Vector3(x, y, z),
-          billboardQuaternion,
-          new THREE.Vector3(visual.scale, visual.scale, visual.scale),
-        );
-        nodeMesh.setMatrixAt(i, matrix);
-        color.set(visual.color);
-        nodeMesh.setColorAt(i, color);
+      if (dirty.nodeVisuals) {
+        const finishNodeVisuals = finishSceneUpdateCategory('node-visuals');
+        const now = Date.now();
+        const color = new THREE.Color();
+        nodeVisuals.length = nodes.length;
 
-        matrix.compose(
-          new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0),
-          billboardQuaternion,
-          new THREE.Vector3(visual.haloScale, visual.haloScale, visual.haloScale),
-        );
-        haloMesh.setMatrixAt(i, matrix);
-        color.set(brightenColor(visual.color, 1.45));
-        haloMesh.setColorAt(i, color);
+        for (let i = 0; i < nodes.length; i += 1) {
+          const node = nodes[i];
+          const visual = getNodeVisual(node.id, node.attributes, now);
+          nodeVisuals[i] = visual;
 
-        matrix.compose(
-          new THREE.Vector3(x, y, z),
-          billboardQuaternion,
-          new THREE.Vector3(visual.shellScale, visual.shellScale, visual.shellScale),
-        );
-        shellMesh.setMatrixAt(i, matrix);
-        color.set(visual.shellColor);
-        shellMesh.setColorAt(i, color);
+          color.set(visual.color);
+          nodeMesh.setColorAt(i, color);
+          color.set(brightenColor(visual.color, 1.45));
+          haloMesh.setColorAt(i, color);
+          color.set(visual.shellColor);
+          shellMesh.setColorAt(i, color);
+        }
 
-        if (sparkPositions && sparkColors) {
+        if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
+        if (haloMesh.instanceColor) haloMesh.instanceColor.needsUpdate = true;
+        if (shellMesh.instanceColor) shellMesh.instanceColor.needsUpdate = true;
+        dirty.nodeVisuals = false;
+        finishNodeVisuals();
+      }
+
+      if (dirty.nodeTransforms) {
+        const finishNodeTransforms = finishSceneUpdateCategory('node-transforms');
+        const now = Date.now();
+        const matrix = new THREE.Matrix4();
+        const position = new THREE.Vector3();
+        const scale = new THREE.Vector3();
+        const billboardQuaternion = cameraRef.current?.quaternion || new THREE.Quaternion();
+
+        for (let i = 0; i < nodes.length; i += 1) {
+          const node = nodes[i];
+          const visual = nodeVisuals[i] || getNodeVisual(node.id, node.attributes, now);
+          position.set(node.x || 0, node.y || 0, node.z || 0);
+
+          scale.set(visual.scale, visual.scale, visual.scale);
+          matrix.compose(position, billboardQuaternion, scale);
+          nodeMesh.setMatrixAt(i, matrix);
+
+          scale.set(visual.haloScale, visual.haloScale, visual.haloScale);
+          matrix.compose(position, billboardQuaternion, scale);
+          haloMesh.setMatrixAt(i, matrix);
+
+          scale.set(visual.shellScale, visual.shellScale, visual.shellScale);
+          matrix.compose(position, billboardQuaternion, scale);
+          shellMesh.setMatrixAt(i, matrix);
+        }
+
+        nodeMesh.instanceMatrix.needsUpdate = true;
+        haloMesh.instanceMatrix.needsUpdate = true;
+        shellMesh.instanceMatrix.needsUpdate = true;
+        if (cameraRef.current) lastCameraQuaternionRef.current.copy(cameraRef.current.quaternion);
+        dirty.nodeTransforms = false;
+        dirty.cameraBillboards = false;
+        finishNodeTransforms();
+      }
+
+      if (dirty.sparkPositions && sparkPositions) {
+        const finishSparkPositions = finishSceneUpdateCategory('spark-positions');
+        for (let i = 0; i < nodes.length; i += 1) {
+          const node = nodes[i];
           const sparkBase = i * 3;
-          sparkPositions[sparkBase] = x;
-          sparkPositions[sparkBase + 1] = y;
-          sparkPositions[sparkBase + 2] = z;
+          sparkPositions[sparkBase] = node.x || 0;
+          sparkPositions[sparkBase + 1] = node.y || 0;
+          sparkPositions[sparkBase + 2] = node.z || 0;
+        }
+
+        const sparkPositionAttr = sparkPoints.geometry.getAttribute(
+          'position',
+        ) as THREE.BufferAttribute;
+        sparkPositionAttr.needsUpdate = true;
+        dirty.sparkPositions = false;
+        finishSparkPositions();
+      }
+
+      if (dirty.sparkVisuals && sparkColors) {
+        const finishSparkVisuals = finishSceneUpdateCategory('spark-visuals');
+        const now = Date.now();
+        const color = new THREE.Color();
+        for (let i = 0; i < nodes.length; i += 1) {
+          const node = nodes[i];
+          const visual = nodeVisuals[i] || getNodeVisual(node.id, node.attributes, now);
+          const sparkBase = i * 3;
           color.set(visual.visible ? mixColor(visual.color, '#ffffff', 0.18) : '#000000');
           sparkColors[sparkBase] = color.r;
           sparkColors[sparkBase + 1] = color.g;
           sparkColors[sparkBase + 2] = color.b;
         }
-      }
-      nodeMesh.instanceMatrix.needsUpdate = true;
-      if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
-      haloMesh.instanceMatrix.needsUpdate = true;
-      if (haloMesh.instanceColor) haloMesh.instanceColor.needsUpdate = true;
-      shellMesh.instanceMatrix.needsUpdate = true;
-      if (shellMesh.instanceColor) shellMesh.instanceColor.needsUpdate = true;
-      if (sparkPositions && sparkColors) {
-        sparkPositionAttr.needsUpdate = true;
+
+        const sparkColorAttr = sparkPoints.geometry.getAttribute('color') as THREE.BufferAttribute;
         sparkColorAttr.needsUpdate = true;
+        dirty.sparkVisuals = false;
+        finishSparkVisuals();
       }
 
-      const positionAttr = edgeLines.geometry.getAttribute('position') as THREE.BufferAttribute;
-      const colorAttr = edgeLines.geometry.getAttribute('color') as THREE.BufferAttribute;
       const positions = edgePositionsRef.current;
       const colors = edgeColorsRef.current;
-      if (!positions || !colors) {
+      if ((dirty.edgePositions && !positions) || (dirty.edgeVisuals && !colors)) {
         finishSceneUpdate();
         return;
       }
 
       const visibleTypes = visibleEdgeTypesRef.current;
-      const highlighted = highlightedRef.current;
-      const blastRadius = blastRadiusRef.current;
-      const currentSelected = selectedNodeRef.current;
-
-      for (let i = 0; i < linksRef.current.length; i += 1) {
-        const link = linksRef.current[i];
+      const resolveEdgeVisibility = (link: Graph3DLink) => {
         const source = resolveLinkNode(link.source);
         const target = resolveLinkNode(link.target);
         const sourceAttrs = source ? source.attributes : null;
         const targetAttrs = target ? target.attributes : null;
-        const base = i * EDGE_CURVE_SEGMENTS * 6;
-        const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
         const hiddenByType =
           visibleTypes && link.attributes.relationType
             ? !visibleTypes.includes(link.attributes.relationType as EdgeType)
@@ -461,116 +575,174 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
           !targetAttrs?.hidden &&
           !hiddenByType;
 
-        if (!isVisible || !source || !target) {
-          positions.fill(0, base, base + edgeSpan);
-          colors.fill(0, base, base + edgeSpan);
-          continue;
+        return { isVisible, source, target };
+      };
+
+      if (dirty.edgePositions && positions) {
+        const finishEdgePositions = finishSceneUpdateCategory('edge-positions');
+        for (let i = 0; i < linksRef.current.length; i += 1) {
+          const link = linksRef.current[i];
+          const { isVisible, source, target } = resolveEdgeVisibility(link);
+          const base = i * EDGE_CURVE_SEGMENTS * 6;
+          const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
+
+          if (!isVisible || !source || !target) {
+            positions.fill(0, base, base + edgeSpan);
+            continue;
+          }
+
+          SCRATCH_SOURCE.set(source.x || 0, source.y || 0, source.z || 0);
+          SCRATCH_TARGET.set(target.x || 0, target.y || 0, target.z || 0);
+          SCRATCH_MID.copy(SCRATCH_SOURCE).add(SCRATCH_TARGET).multiplyScalar(0.5);
+          SCRATCH_DIRECTION.copy(SCRATCH_TARGET).sub(SCRATCH_SOURCE);
+          const distance = Math.max(1, SCRATCH_DIRECTION.length());
+          SCRATCH_DIRECTION.divideScalar(distance);
+
+          SCRATCH_BEND.copy(link.curveVector);
+          SCRATCH_BEND.addScaledVector(SCRATCH_DIRECTION, -SCRATCH_BEND.dot(SCRATCH_DIRECTION));
+          if (SCRATCH_BEND.lengthSq() < 0.0001) {
+            SCRATCH_BEND.set(0, 1, 0).addScaledVector(SCRATCH_DIRECTION, -SCRATCH_DIRECTION.y);
+          }
+          SCRATCH_BEND.normalize();
+
+          const arcHeight = Math.min(125, Math.max(10, distance * link.curveMultiplier));
+          SCRATCH_CONTROL.copy(SCRATCH_MID).addScaledVector(SCRATCH_BEND, arcHeight);
+
+          for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
+            const startT = segment / EDGE_CURVE_SEGMENTS;
+            const endT = (segment + 1) / EDGE_CURVE_SEGMENTS;
+            setQuadraticPoint(
+              SCRATCH_POINT_A,
+              SCRATCH_SOURCE,
+              SCRATCH_CONTROL,
+              SCRATCH_TARGET,
+              startT,
+            );
+            setQuadraticPoint(
+              SCRATCH_POINT_B,
+              SCRATCH_SOURCE,
+              SCRATCH_CONTROL,
+              SCRATCH_TARGET,
+              endT,
+            );
+
+            const segmentBase = base + segment * 6;
+            positions[segmentBase] = SCRATCH_POINT_A.x;
+            positions[segmentBase + 1] = SCRATCH_POINT_A.y;
+            positions[segmentBase + 2] = SCRATCH_POINT_A.z;
+            positions[segmentBase + 3] = SCRATCH_POINT_B.x;
+            positions[segmentBase + 4] = SCRATCH_POINT_B.y;
+            positions[segmentBase + 5] = SCRATCH_POINT_B.z;
+          }
         }
 
-        const edgeVisual = resolveGraphEdgeVisual({
-          sourceId: link.sourceId,
-          targetId: link.targetId,
-          color: link.attributes.color || GRAPH_SURFACE_COLORS.fallbackEdge,
-          size: link.attributes.size || 1,
-          selectedNodeId: currentSelected,
-          highlightedNodeIds: highlighted,
-          blastRadiusNodeIds: blastRadius,
-        });
-        const edgeColor = edgeVisual.color;
-
-        color.set(edgeColor);
-        edgeHighlightColor.copy(color).lerp(WHITE_COLOR, 0.34);
-
-        SCRATCH_SOURCE.set(source.x || 0, source.y || 0, source.z || 0);
-        SCRATCH_TARGET.set(target.x || 0, target.y || 0, target.z || 0);
-        SCRATCH_MID.copy(SCRATCH_SOURCE).add(SCRATCH_TARGET).multiplyScalar(0.5);
-        SCRATCH_DIRECTION.copy(SCRATCH_TARGET).sub(SCRATCH_SOURCE);
-        const distance = Math.max(1, SCRATCH_DIRECTION.length());
-        SCRATCH_DIRECTION.divideScalar(distance);
-
-        SCRATCH_BEND.copy(link.curveVector);
-        SCRATCH_BEND.addScaledVector(SCRATCH_DIRECTION, -SCRATCH_BEND.dot(SCRATCH_DIRECTION));
-        if (SCRATCH_BEND.lengthSq() < 0.0001) {
-          SCRATCH_BEND.set(0, 1, 0).addScaledVector(SCRATCH_DIRECTION, -SCRATCH_DIRECTION.y);
-        }
-        SCRATCH_BEND.normalize();
-
-        const arcHeight = Math.min(125, Math.max(10, distance * link.curveMultiplier));
-        SCRATCH_CONTROL.copy(SCRATCH_MID).addScaledVector(SCRATCH_BEND, arcHeight);
-
-        for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
-          const startT = segment / EDGE_CURVE_SEGMENTS;
-          const endT = (segment + 1) / EDGE_CURVE_SEGMENTS;
-          setQuadraticPoint(
-            SCRATCH_POINT_A,
-            SCRATCH_SOURCE,
-            SCRATCH_CONTROL,
-            SCRATCH_TARGET,
-            startT,
-          );
-          setQuadraticPoint(SCRATCH_POINT_B, SCRATCH_SOURCE, SCRATCH_CONTROL, SCRATCH_TARGET, endT);
-
-          const segmentBase = base + segment * 6;
-          positions[segmentBase] = SCRATCH_POINT_A.x;
-          positions[segmentBase + 1] = SCRATCH_POINT_A.y;
-          positions[segmentBase + 2] = SCRATCH_POINT_A.z;
-          positions[segmentBase + 3] = SCRATCH_POINT_B.x;
-          positions[segmentBase + 4] = SCRATCH_POINT_B.y;
-          positions[segmentBase + 5] = SCRATCH_POINT_B.z;
-
-          const distanceFromMiddle = Math.abs((segment + 0.5) / EDGE_CURVE_SEGMENTS - 0.5) * 2;
-          const segmentColor = distanceFromMiddle < 0.42 ? edgeHighlightColor : color;
-          colors[segmentBase] = segmentColor.r;
-          colors[segmentBase + 1] = segmentColor.g;
-          colors[segmentBase + 2] = segmentColor.b;
-          colors[segmentBase + 3] = segmentColor.r;
-          colors[segmentBase + 4] = segmentColor.g;
-          colors[segmentBase + 5] = segmentColor.b;
-        }
+        const positionAttr = edgeLines.geometry.getAttribute('position') as THREE.BufferAttribute;
+        positionAttr.needsUpdate = true;
+        dirty.edgePositions = false;
+        finishEdgePositions();
       }
 
-      positionAttr.needsUpdate = true;
-      colorAttr.needsUpdate = true;
+      if (dirty.edgeVisuals && colors) {
+        const finishEdgeVisuals = finishSceneUpdateCategory('edge-visuals');
+        const color = new THREE.Color();
+        const edgeHighlightColor = new THREE.Color();
+        const highlighted = highlightedRef.current;
+        const blastRadius = blastRadiusRef.current;
+        const currentSelected = selectedNodeRef.current;
+
+        for (let i = 0; i < linksRef.current.length; i += 1) {
+          const link = linksRef.current[i];
+          const { isVisible } = resolveEdgeVisibility(link);
+          const base = i * EDGE_CURVE_SEGMENTS * 6;
+          const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
+
+          if (!isVisible) {
+            colors.fill(0, base, base + edgeSpan);
+            continue;
+          }
+
+          const edgeVisual = resolveGraphEdgeVisual({
+            sourceId: link.sourceId,
+            targetId: link.targetId,
+            color: link.attributes.color || GRAPH_SURFACE_COLORS.fallbackEdge,
+            size: link.attributes.size || 1,
+            selectedNodeId: currentSelected,
+            highlightedNodeIds: highlighted,
+            blastRadiusNodeIds: blastRadius,
+          });
+
+          color.set(edgeVisual.color);
+          edgeHighlightColor.copy(color).lerp(WHITE_COLOR, 0.34);
+
+          for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
+            const segmentBase = base + segment * 6;
+            const distanceFromMiddle = Math.abs((segment + 0.5) / EDGE_CURVE_SEGMENTS - 0.5) * 2;
+            const segmentColor = distanceFromMiddle < 0.42 ? edgeHighlightColor : color;
+            colors[segmentBase] = segmentColor.r;
+            colors[segmentBase + 1] = segmentColor.g;
+            colors[segmentBase + 2] = segmentColor.b;
+            colors[segmentBase + 3] = segmentColor.r;
+            colors[segmentBase + 4] = segmentColor.g;
+            colors[segmentBase + 5] = segmentColor.b;
+          }
+        }
+
+        const colorAttr = edgeLines.geometry.getAttribute('color') as THREE.BufferAttribute;
+        colorAttr.needsUpdate = true;
+        dirty.edgeVisuals = false;
+        finishEdgeVisuals();
+      }
+
+      dirty.animation = false;
       finishSceneUpdate();
     },
     [getNodeVisual],
   );
 
-  const frameNodes = useCallback((targetNodeId?: string) => {
-    const camera = cameraRef.current;
-    const arcball = arcballRef.current;
-    if (!camera || !arcball) return;
+  const frameNodes = useCallback(
+    (targetNodeId?: string) => {
+      const camera = cameraRef.current;
+      const arcball = arcballRef.current;
+      if (!camera || !arcball) return;
 
-    const targetNode = targetNodeId ? nodeIndexRef.current.get(targetNodeId) : null;
-    const target = targetNode
-      ? {
-          center: getNodePosition(targetNode),
-          radius: Math.max(80, (targetNode.attributes.size || 4) * 26),
-        }
-      : getCameraTarget(nodesRef.current);
+      const targetNode = targetNodeId ? nodeIndexRef.current.get(targetNodeId) : null;
+      const target = targetNode
+        ? {
+            center: getNodePosition(targetNode),
+            radius: Math.max(80, (targetNode.attributes.size || 4) * 26),
+          }
+        : getCameraTarget(nodesRef.current);
 
-    const distance = Math.max(target.radius * (nodesRef.current.length > 5000 ? 1.22 : 1.55), 140);
-    const destination = new THREE.Vector3(
-      target.center.x + distance * 0.62,
-      target.center.y + distance * 0.32,
-      target.center.z + distance * 0.72,
-    );
+      const distance = Math.max(
+        target.radius * (nodesRef.current.length > 5000 ? 1.22 : 1.55),
+        140,
+      );
+      const destination = new THREE.Vector3(
+        target.center.x + distance * 0.62,
+        target.center.y + distance * 0.32,
+        target.center.z + distance * 0.72,
+      );
 
-    camera.position.copy(destination);
-    camera.near = Math.max(0.1, target.radius / 120);
-    camera.far = Math.max(5000, target.radius * 18);
-    camera.lookAt(target.center);
-    camera.updateProjectionMatrix();
+      camera.position.copy(destination);
+      camera.near = Math.max(0.1, target.radius / 120);
+      camera.far = Math.max(5000, target.radius * 18);
+      camera.lookAt(target.center);
+      camera.updateProjectionMatrix();
 
-    arcball.target.copy(target.center);
-    arcball.saveState();
-    arcball.update();
-  }, []);
+      arcball.target.copy(target.center);
+      arcball.saveState();
+      arcball.update();
+      markSceneDirty({ cameraBillboards: true });
+    },
+    [markSceneDirty],
+  );
 
   const stopLayout = useCallback(() => {
     simulationRef.current?.stop();
+    layoutRunningRef.current = false;
+    markGraphPositionsDirty();
     setIsLayoutRunning(false);
-  }, []);
+  }, [markGraphPositionsDirty]);
 
   const startLayout = useCallback(() => {
     if (nodesRef.current.length === 0) return;
@@ -614,11 +786,17 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       .alphaMin(0.001)
       .alphaDecay(getLayoutAlphaDecay(nodeCount))
       .velocityDecay(0.32)
-      .on('end', () => setIsLayoutRunning(false));
+      .on('end', () => {
+        layoutRunningRef.current = false;
+        markGraphPositionsDirty();
+        setIsLayoutRunning(false);
+      });
 
     simulationRef.current = simulation;
+    layoutRunningRef.current = true;
+    markGraphPositionsDirty();
     setIsLayoutRunning(true);
-  }, []);
+  }, [markGraphPositionsDirty]);
 
   const disposeSceneObjects = useCallback(() => {
     const scene = sceneRef.current;
@@ -651,6 +829,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       sparkPointsRef.current = null;
       sparkPositionsRef.current = null;
       sparkColorsRef.current = null;
+      nodeVisualsRef.current = [];
     }
 
     if (edgeLinesRef.current) {
@@ -658,6 +837,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       edgeLinesRef.current.geometry.dispose();
       disposeMaterial(edgeLinesRef.current.material);
       edgeLinesRef.current = null;
+      edgePositionsRef.current = null;
+      edgeColorsRef.current = null;
     }
   }, []);
 
@@ -883,6 +1064,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       edgePositionsRef.current = edgePositions;
       edgeColorsRef.current = edgeColors;
 
+      markSceneFullyDirty();
       updateSceneObjects('setGraph');
       if (shouldResetCamera) {
         frameNodes();
@@ -891,27 +1073,39 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         startLayout();
       }
     },
-    [disposeSceneObjects, frameNodes, setSelectedNode, startLayout, stopLayout, updateSceneObjects],
+    [
+      disposeSceneObjects,
+      frameNodes,
+      markSceneFullyDirty,
+      setSelectedNode,
+      startLayout,
+      stopLayout,
+      updateSceneObjects,
+    ],
   );
 
-  const setCameraMode = useCallback((mode: ThreeGraphCameraMode) => {
-    const arcball = arcballRef.current;
-    const pointerLock = pointerLockRef.current;
+  const setCameraMode = useCallback(
+    (mode: ThreeGraphCameraMode) => {
+      const arcball = arcballRef.current;
+      const pointerLock = pointerLockRef.current;
 
-    cameraModeRef.current = mode;
-    setCameraModeState(mode);
+      cameraModeRef.current = mode;
+      setCameraModeState(mode);
 
-    if (mode === 'firstPerson') {
-      if (arcball) arcball.enabled = false;
-      pointerLock?.lock();
-    } else {
-      pointerLock?.unlock();
-      if (arcball) {
-        arcball.enabled = true;
-        arcball.update();
+      if (mode === 'firstPerson') {
+        if (arcball) arcball.enabled = false;
+        pointerLock?.lock();
+      } else {
+        pointerLock?.unlock();
+        if (arcball) {
+          arcball.enabled = true;
+          arcball.update();
+        }
       }
-    }
-  }, []);
+      markSceneDirty({ cameraBillboards: true });
+    },
+    [markSceneDirty],
+  );
 
   const focusNode = useCallback(
     (nodeId: string) => {
@@ -922,17 +1116,21 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     [frameNodes, setSelectedNode],
   );
 
-  const zoomToward = useCallback((amount: number) => {
-    const camera = cameraRef.current;
-    const arcball = arcballRef.current;
-    if (!camera || !arcball) return;
+  const zoomToward = useCallback(
+    (amount: number) => {
+      const camera = cameraRef.current;
+      const arcball = arcballRef.current;
+      if (!camera || !arcball) return;
 
-    const target = arcball.target;
-    const direction = target.clone().sub(camera.position);
-    camera.position.add(direction.multiplyScalar(amount));
-    camera.lookAt(target);
-    arcball.update();
-  }, []);
+      const target = arcball.target;
+      const direction = target.clone().sub(camera.position);
+      camera.position.add(direction.multiplyScalar(amount));
+      camera.lookAt(target);
+      arcball.update();
+      markSceneDirty({ cameraBillboards: true });
+    },
+    [markSceneDirty],
+  );
 
   const zoomIn = useCallback(() => zoomToward(0.18), [zoomToward]);
   const zoomOut = useCallback(() => zoomToward(-0.22), [zoomToward]);
@@ -943,20 +1141,23 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   }, [frameNodes, setSelectedNode]);
 
   const refreshHighlights = useCallback(() => {
+    markGraphVisualsDirty(true);
     updateSceneObjects('refreshHighlights');
-  }, [updateSceneObjects]);
+  }, [markGraphVisualsDirty, updateSceneObjects]);
 
   useEffect(() => {
     highlightedRef.current = options.highlightedNodeIds || new Set();
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
+    markGraphVisualsDirty(true);
     updateSceneObjects('visual-options');
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    markGraphVisualsDirty,
     updateSceneObjects,
   ]);
 
@@ -1065,6 +1266,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (hoveredNodeRef.current !== nodeId) {
         hoveredNodeRef.current = nodeId;
         optionsRef.current.onNodeHover?.(nodeId);
+        markSceneDirty({ nodeVisuals: true });
         updateSceneObjects('pointer-hover');
       }
       container.style.cursor = nodeId
@@ -1101,6 +1303,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (hoveredNodeRef.current !== null) {
         hoveredNodeRef.current = null;
         optionsRef.current.onNodeHover?.(null);
+        markSceneDirty({ nodeVisuals: true });
         updateSceneObjects('pointer-leave');
       }
       container.style.cursor = cameraModeRef.current === 'arcball' ? 'grab' : 'crosshair';
@@ -1145,6 +1348,9 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         arcball.update();
       }
 
+      if (layoutRunningRef.current) {
+        markGraphPositionsDirty();
+      }
       updateSceneObjects('frame');
       renderer.render(scene, camera);
     };
@@ -1167,6 +1373,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
       simulationRef.current?.stop();
       simulationRef.current = null;
+      layoutRunningRef.current = false;
       disposeSceneObjects();
       arcball.dispose();
       pointerLock.dispose();
@@ -1178,7 +1385,13 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       arcballRef.current = null;
       pointerLockRef.current = null;
     };
-  }, [disposeSceneObjects, setSelectedNode, updateSceneObjects]);
+  }, [
+    disposeSceneObjects,
+    markGraphPositionsDirty,
+    markSceneDirty,
+    setSelectedNode,
+    updateSceneObjects,
+  ]);
 
   return {
     containerRef,
