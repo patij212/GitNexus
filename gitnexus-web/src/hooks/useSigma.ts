@@ -10,6 +10,11 @@ import type { NodeAnimation } from './useAppState';
 import { GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
 import { resolveGraphEdgeVisual, resolveGraphNodeVisual } from '../lib/graph-visual-state';
 import { GRAPH_PERF_METRICS, recordGraphPerf, type GraphPerfObserver } from '../lib/graph-perf';
+import {
+  createActiveAnimationSnapshot,
+  createAnimationCacheKey,
+  createStableCollectionSignature,
+} from '../lib/sigma-visual-cache';
 
 interface UseSigmaOptions {
   onNodeClick?: (nodeId: string) => void;
@@ -57,6 +62,26 @@ type LayoutBudget = {
 };
 
 type LayoutSnapshot = Map<string, { x: number; y: number }>;
+
+type CachedReducerEntry<T> = {
+  signature: string;
+  output: T;
+};
+
+type CachedReducerAttributes = Record<string, unknown>;
+
+const createNodeBaseSignature = (data: CachedReducerAttributes): string =>
+  [data.x, data.y, data.z ?? '', data.hidden ? 1 : 0, data.color, data.size, data.label].join('|');
+
+const createEdgeBaseSignature = (data: CachedReducerAttributes): string =>
+  [
+    data.hidden ? 1 : 0,
+    data.color,
+    data.size,
+    data.relationType,
+    data.type ?? '',
+    data.curvature ?? '',
+  ].join('|');
 
 const snapshotLayout = (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>): LayoutSnapshot => {
   const positions: LayoutSnapshot = new Map();
@@ -220,12 +245,23 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const highlightedRef = useRef<Set<string>>(new Set());
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
+  const activeAnimatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const visibleEdgeTypesSetRef = useRef<Set<EdgeType> | null>(null);
   const optionsRef = useRef(options);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const layoutRunIdRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
+  const graphVersionRef = useRef(0);
+  const nodeVisualStateVersionRef = useRef(0);
+  const edgeVisualStateVersionRef = useRef(0);
+  const nodeVisualStateSignatureRef = useRef('');
+  const edgeVisualStateSignatureRef = useRef('');
+  const animationFrameVersionRef = useRef(0);
+  const animationNowRef = useRef(Date.now());
+  const nodeVisualCacheRef = useRef(new Map<string, CachedReducerEntry<CachedReducerAttributes>>());
+  const edgeVisualCacheRef = useRef(new Map<string, CachedReducerEntry<CachedReducerAttributes>>());
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
 
@@ -237,15 +273,56 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.sigmaRefresh, { label });
   }, []);
 
+  const syncVisualStateVersions = useCallback(() => {
+    const selectedSignature = selectedNodeRef.current ?? '';
+    const highlightedSignature = createStableCollectionSignature(highlightedRef.current);
+    const blastRadiusSignature = createStableCollectionSignature(blastRadiusRef.current);
+    const nodeSignature = [selectedSignature, highlightedSignature, blastRadiusSignature].join('|');
+
+    if (nodeSignature !== nodeVisualStateSignatureRef.current) {
+      nodeVisualStateSignatureRef.current = nodeSignature;
+      nodeVisualStateVersionRef.current += 1;
+    }
+
+    const edgeSignature = [
+      nodeSignature,
+      createStableCollectionSignature(visibleEdgeTypesRef.current),
+    ].join('|');
+
+    if (edgeSignature !== edgeVisualStateSignatureRef.current) {
+      edgeVisualStateSignatureRef.current = edgeSignature;
+      edgeVisualStateVersionRef.current += 1;
+    }
+  }, []);
+
+  const syncActiveAnimations = useCallback((now: number): boolean => {
+    const snapshot = createActiveAnimationSnapshot(animatedNodesRef.current, now);
+    activeAnimatedNodesRef.current = snapshot.animations;
+    animationNowRef.current = now;
+    return snapshot.hasActiveAnimations;
+  }, []);
+
+  const prepareAnimationFrame = useCallback(
+    (now = Date.now()): boolean => {
+      animationFrameVersionRef.current += 1;
+      return syncActiveAnimations(now);
+    },
+    [syncActiveAnimations],
+  );
+
   const refreshSigma = useCallback(
-    (label: string) => {
+    (label: string, refreshOptions: { syncAnimations?: boolean } = {}) => {
       const sigma = sigmaRef.current;
       if (!sigma) return;
+
+      if ((refreshOptions.syncAnimations ?? true) && animatedNodesRef.current.size > 0) {
+        prepareAnimationFrame();
+      }
 
       sigma.refresh();
       recordSigmaRefresh(label);
     },
-    [recordSigmaRefresh],
+    [prepareAnimationFrame, recordSigmaRefresh],
   );
 
   const clearLayoutTimers = useCallback(() => {
@@ -285,31 +362,45 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
-    refreshSigma('visual-options');
+    visibleEdgeTypesSetRef.current = options.visibleEdgeTypes
+      ? new Set(options.visibleEdgeTypes)
+      : null;
+    syncVisualStateVersions();
+    prepareAnimationFrame();
+    refreshSigma('visual-options', { syncAnimations: false });
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    prepareAnimationFrame,
     refreshSigma,
+    syncVisualStateVersions,
   ]);
 
   // Animation loop for node effects
   useEffect(() => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
     if (!options.animatedNodes || options.animatedNodes.size === 0) {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+      activeAnimatedNodesRef.current = new Map();
       return;
     }
 
     const animate = () => {
-      refreshSigma('animation');
-      animationFrameRef.current = requestAnimationFrame(animate);
+      const hasActiveAnimations = prepareAnimationFrame();
+      refreshSigma(hasActiveAnimations ? 'animation' : 'animation-final', {
+        syncAnimations: false,
+      });
+      animationFrameRef.current = hasActiveAnimations ? requestAnimationFrame(animate) : null;
     };
 
-    animate();
+    if (prepareAnimationFrame()) {
+      animationFrameRef.current = requestAnimationFrame(animate);
+    }
 
     return () => {
       if (animationFrameRef.current) {
@@ -317,12 +408,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         animationFrameRef.current = null;
       }
     };
-  }, [options.animatedNodes, refreshSigma]);
+  }, [options.animatedNodes, prepareAnimationFrame, refreshSigma]);
 
   const setSelectedNode = useCallback(
     (nodeId: string | null) => {
       selectedNodeRef.current = nodeId;
       setSelectedNodeState(nodeId);
+      syncVisualStateVersions();
 
       const sigma = sigmaRef.current;
       if (!sigma) return;
@@ -333,10 +425,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       // Imperceptible zoom change that triggers re-render
       camera.animate({ ratio: currentRatio * 1.0001 }, { duration: 50 });
 
-      sigma.refresh();
-      recordSigmaRefresh('selection');
+      refreshSigma('selection');
     },
-    [recordSigmaRefresh],
+    [refreshSigma, syncVisualStateVersions],
   );
 
   // Initialize Sigma ONCE
@@ -419,10 +510,26 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       zIndex: true,
 
       nodeReducer: (node, data) => {
+        const animation = data.hidden ? null : activeAnimatedNodesRef.current.get(node);
+        const animationKey = animation
+          ? createAnimationCacheKey(animation, animationFrameVersionRef.current)
+          : 'none';
+        const signature = [
+          graphVersionRef.current,
+          nodeVisualStateVersionRef.current,
+          animationKey,
+          createNodeBaseSignature(data),
+        ].join('|');
+        const cached = nodeVisualCacheRef.current.get(node);
+        if (cached?.signature === signature) {
+          return cached.output;
+        }
+
         const res = { ...data };
 
         if (data.hidden) {
           res.hidden = true;
+          nodeVisualCacheRef.current.set(node, { signature, output: res });
           return res;
         }
 
@@ -435,7 +542,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           selectedNodeId: currentSelected,
           highlightedNodeIds: highlightedRef.current,
           blastRadiusNodeIds: blastRadiusRef.current,
-          animatedNodes: animatedNodesRef.current,
+          animatedNodes: activeAnimatedNodesRef.current,
+          now: animationNowRef.current,
           isNeighbor: currentSelected
             ? Boolean(
                 graph?.hasEdge(node, currentSelected) || graph?.hasEdge(currentSelected, node),
@@ -448,17 +556,29 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         res.zIndex = visual.zIndex;
         res.highlighted = visual.highlighted;
 
+        nodeVisualCacheRef.current.set(node, { signature, output: res });
         return res;
       },
 
       edgeReducer: (edge, data) => {
+        const signature = [
+          graphVersionRef.current,
+          edgeVisualStateVersionRef.current,
+          createEdgeBaseSignature(data),
+        ].join('|');
+        const cached = edgeVisualCacheRef.current.get(edge);
+        if (cached?.signature === signature) {
+          return cached.output;
+        }
+
         const res = { ...data };
 
         // Check edge type visibility first
-        const visibleTypes = visibleEdgeTypesRef.current;
+        const visibleTypes = visibleEdgeTypesSetRef.current;
         if (visibleTypes && data.relationType) {
-          if (!visibleTypes.includes(data.relationType as EdgeType)) {
+          if (!visibleTypes.has(data.relationType as EdgeType)) {
             res.hidden = true;
+            edgeVisualCacheRef.current.set(edge, { signature, output: res });
             return res;
           }
         }
@@ -485,6 +605,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           res.zIndex = visual.zIndex;
         }
 
+        edgeVisualCacheRef.current.set(edge, { signature, output: res });
         return res;
       },
     });
@@ -614,6 +735,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       }
       setIsLayoutRunning(false);
 
+      graphVersionRef.current += 1;
+      nodeVisualCacheRef.current.clear();
+      edgeVisualCacheRef.current.clear();
       graphRef.current = newGraph;
       sigma.setGraph(newGraph);
       if (shouldClearSelection) {
@@ -623,14 +747,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       if (shouldRunLayout) {
         runLayout(newGraph);
       } else {
-        sigma.refresh();
-        recordSigmaRefresh('setGraph');
+        refreshSigma('setGraph');
       }
       if (shouldResetCamera) {
         sigma.getCamera().animatedReset({ duration: 500 });
       }
     },
-    [clearLayoutTimers, recordSigmaRefresh, runLayout, setSelectedNode],
+    [clearLayoutTimers, refreshSigma, runLayout, setSelectedNode],
   );
 
   const focusNode = useCallback(
@@ -645,6 +768,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       // Set selection state directly (without the camera nudge from setSelectedNode)
       selectedNodeRef.current = nodeId;
       setSelectedNodeState(nodeId);
+      syncVisualStateVersions();
 
       // Only animate camera if selecting a new node
       if (!alreadySelected) {
@@ -654,10 +778,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           .animate({ x: nodeAttrs.x, y: nodeAttrs.y, ratio: 0.15 }, { duration: 400 });
       }
 
-      sigma.refresh();
-      recordSigmaRefresh('focus');
+      refreshSigma('focus');
     },
-    [recordSigmaRefresh],
+    [refreshSigma, syncVisualStateVersions],
   );
 
   const zoomIn = useCallback(() => {
