@@ -17,6 +17,7 @@ import {
 } from '../lib/sigma-visual-cache';
 
 interface UseSigmaOptions {
+  isActive?: boolean;
   onNodeClick?: (nodeId: string) => void;
   onNodeHover?: (nodeId: string | null) => void;
   onStageClick?: () => void;
@@ -249,6 +250,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
   const visibleEdgeTypesSetRef = useRef<Set<EdgeType> | null>(null);
   const optionsRef = useRef(options);
+  const isActiveRef = useRef(options.isActive ?? true);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const layoutRunIdRef = useRef(0);
@@ -267,7 +269,10 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
   useEffect(() => {
     optionsRef.current = options;
+    isActiveRef.current = options.isActive ?? true;
   });
+
+  const isRendererActive = useCallback(() => isActiveRef.current, []);
 
   const recordSigmaRefresh = useCallback((label: string) => {
     recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.sigmaRefresh, { label });
@@ -313,7 +318,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const refreshSigma = useCallback(
     (label: string, refreshOptions: { syncAnimations?: boolean } = {}) => {
       const sigma = sigmaRef.current;
-      if (!sigma) return;
+      if (!sigma || !isRendererActive()) return;
 
       if ((refreshOptions.syncAnimations ?? true) && animatedNodesRef.current.size > 0) {
         prepareAnimationFrame();
@@ -322,7 +327,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       sigma.refresh();
       recordSigmaRefresh(label);
     },
-    [prepareAnimationFrame, recordSigmaRefresh],
+    [isRendererActive, prepareAnimationFrame, recordSigmaRefresh],
   );
 
   const clearLayoutTimers = useCallback(() => {
@@ -347,14 +352,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         layoutRef.current = null;
       }
 
-      if (runNoverlap && graph.order > 1) {
+      if (runNoverlap && isRendererActive() && graph.order > 1) {
         noverlap.assign(graph, getNoverlapSettings(graph.order));
         refreshSigma('noverlap');
       }
 
       setIsLayoutRunning(false);
     },
-    [clearLayoutTimers, refreshSigma],
+    [clearLayoutTimers, isRendererActive, refreshSigma],
   );
 
   useEffect(() => {
@@ -366,13 +371,17 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       ? new Set(options.visibleEdgeTypes)
       : null;
     syncVisualStateVersions();
-    prepareAnimationFrame();
-    refreshSigma('visual-options', { syncAnimations: false });
+    if (isRendererActive()) {
+      prepareAnimationFrame();
+      refreshSigma('visual-options', { syncAnimations: false });
+    }
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    options.isActive,
+    isRendererActive,
     prepareAnimationFrame,
     refreshSigma,
     syncVisualStateVersions,
@@ -385,12 +394,17 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       animationFrameRef.current = null;
     }
 
-    if (!options.animatedNodes || options.animatedNodes.size === 0) {
+    if (!isRendererActive() || !options.animatedNodes || options.animatedNodes.size === 0) {
       activeAnimatedNodesRef.current = new Map();
       return;
     }
 
     const animate = () => {
+      if (!isRendererActive()) {
+        animationFrameRef.current = null;
+        return;
+      }
+
       const hasActiveAnimations = prepareAnimationFrame();
       refreshSigma(hasActiveAnimations ? 'animation' : 'animation-final', {
         syncAnimations: false,
@@ -408,13 +422,21 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         animationFrameRef.current = null;
       }
     };
-  }, [options.animatedNodes, prepareAnimationFrame, refreshSigma]);
+  }, [
+    options.animatedNodes,
+    options.isActive,
+    isRendererActive,
+    prepareAnimationFrame,
+    refreshSigma,
+  ]);
 
   const setSelectedNode = useCallback(
     (nodeId: string | null) => {
       selectedNodeRef.current = nodeId;
       setSelectedNodeState(nodeId);
       syncVisualStateVersions();
+
+      if (!isRendererActive()) return;
 
       const sigma = sigmaRef.current;
       if (!sigma) return;
@@ -427,7 +449,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       refreshSigma('selection');
     },
-    [refreshSigma, syncVisualStateVersions],
+    [isRendererActive, refreshSigma, syncVisualStateVersions],
   );
 
   // Initialize Sigma ONCE
@@ -655,7 +677,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const runLayout = useCallback(
     (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
       const nodeCount = graph.order;
-      if (nodeCount === 0) return;
+      if (nodeCount === 0 || !isRendererActive()) return;
 
       // Kill existing
       layoutRunIdRef.current += 1;
@@ -712,7 +734,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         finishLayoutRun(runId, graph);
       }, budget.maxDurationMs);
     },
-    [clearLayoutTimers, finishLayoutRun],
+    [clearLayoutTimers, finishLayoutRun, isRendererActive],
   );
 
   const setGraph = useCallback(
@@ -744,23 +766,23 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         setSelectedNode(null);
       }
 
-      if (shouldRunLayout) {
+      if (shouldRunLayout && isRendererActive()) {
         runLayout(newGraph);
-      } else {
+      } else if (isRendererActive()) {
         refreshSigma('setGraph');
       }
-      if (shouldResetCamera) {
+      if (shouldResetCamera && isRendererActive()) {
         sigma.getCamera().animatedReset({ duration: 500 });
       }
     },
-    [clearLayoutTimers, refreshSigma, runLayout, setSelectedNode],
+    [clearLayoutTimers, isRendererActive, refreshSigma, runLayout, setSelectedNode],
   );
 
   const focusNode = useCallback(
     (nodeId: string) => {
       const sigma = sigmaRef.current;
       const graph = graphRef.current;
-      if (!sigma || !graph || !graph.hasNode(nodeId)) return;
+      if (!sigma || !graph || !graph.hasNode(nodeId) || !isRendererActive()) return;
 
       // Skip if already focused on this node (prevents double-click issues)
       const alreadySelected = selectedNodeRef.current === nodeId;
@@ -780,7 +802,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       refreshSigma('focus');
     },
-    [refreshSigma, syncVisualStateVersions],
+    [isRendererActive, refreshSigma, syncVisualStateVersions],
   );
 
   const zoomIn = useCallback(() => {
@@ -815,6 +837,36 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       setIsLayoutRunning(false);
     }
   }, [clearLayoutTimers, finishLayoutRun]);
+
+  useEffect(() => {
+    isActiveRef.current = options.isActive ?? true;
+
+    if (!isRendererActive()) {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      layoutRunIdRef.current += 1;
+      clearLayoutTimers();
+      if (layoutRef.current) {
+        layoutRef.current.kill();
+        layoutRef.current = null;
+      }
+      setIsLayoutRunning(false);
+      return;
+    }
+
+    syncVisualStateVersions();
+    prepareAnimationFrame();
+    refreshSigma('resume', { syncAnimations: false });
+  }, [
+    options.isActive,
+    clearLayoutTimers,
+    isRendererActive,
+    prepareAnimationFrame,
+    refreshSigma,
+    syncVisualStateVersions,
+  ]);
 
   const refreshHighlights = useCallback(() => {
     refreshSigma('manual');

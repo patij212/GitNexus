@@ -328,6 +328,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const renderGraph2DRef = useRef<Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null>(null);
     const renderGraph3DRef = useRef<Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null>(null);
     const previousKnowledgeGraphRef = useRef<typeof graph>(null);
+    const previousGraphViewModeRef = useRef<GraphViewMode>('2d');
+    const graphFilterStateRef = useRef<{
+      selectedNodeId: string | null;
+      depthFilter: number | null;
+      visibleLabels: NodeLabel[];
+    }>({
+      selectedNodeId: null,
+      depthFilter,
+      visibleLabels,
+    });
     const graphChangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const agentLensFocusSignatureRef = useRef<string | null>(null);
     const agentLensFocusedNodeIdRef = useRef<string | null>(null);
@@ -336,6 +346,14 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     useEffect(() => {
       graphViewModeRef.current = graphViewMode;
     }, [graphViewMode]);
+
+    useEffect(() => {
+      graphFilterStateRef.current = {
+        selectedNodeId: appSelectedNode?.id || null,
+        depthFilter,
+        visibleLabels,
+      };
+    }, [appSelectedNode?.id, depthFilter, visibleLabels]);
 
     useEffect(
       () => () => {
@@ -649,6 +667,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       setSelectedNode: setSigmaSelectedNode,
       refreshHighlights: refreshSigmaHighlights,
     } = useSigma({
+      isActive: graphViewMode === '2d',
       onNodeClick: handleNodeClick,
       onNodeHover: handleNodeHover,
       onStageClick: handleStageClick,
@@ -675,6 +694,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       cameraMode,
       setCameraMode,
     } = useThreeGraph({
+      isActive: graphViewMode === '3d',
       onNodeClick: handleNodeClick,
       onNodeHover: handleNodeHover,
       onStageClick: handleStageClick,
@@ -748,57 +768,117 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       [openCodePanel, selectNodeInGraph],
     );
 
-    // Update Sigma graph when KnowledgeGraph changes
-    useEffect(() => {
-      if (!graph) return;
+    const buildRenderGraphForMode = useCallback(
+      (mode: GraphViewMode, preservePositions: boolean) => {
+        if (!graph) return null;
 
-      // Build communityMemberships map from MEMBER_OF relationships
-      // MEMBER_OF edges: nodeId -> communityId (stored as targetId)
-      const communityMemberships = new Map<string, number>();
-      graph.relationships.forEach((rel) => {
-        if (rel.type === 'MEMBER_OF') {
-          // Find the community node to get its index
+        const communityMemberships = new Map<string, number>();
+        graph.relationships.forEach((rel) => {
+          if (rel.type !== 'MEMBER_OF') return;
+
           const communityNode = nodeById.get(rel.targetId);
           if (communityNode && communityNode.label === 'Community') {
-            // Extract community index from id (e.g., "comm_5" -> 5)
             const numericPart = rel.targetId.replace('comm_', '');
             const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
             communityMemberships.set(rel.sourceId, communityIdx);
           }
-        }
-      });
+        });
 
-      const graphologyOptions = {
-        colorMode: graphColorMode,
-        impactNodeIds: effectiveBlastRadiusNodeIds,
-        agentFocusNodeIds: effectiveHighlightedNodeIds,
-        citationNodeIds: activeAICitationNodeIds,
-        toolNodeIds: activeAIToolNodeIds,
-      };
+        const targetGraph = knowledgeGraphToGraphology(graph, communityMemberships, {
+          colorMode: graphColorMode,
+          impactNodeIds: effectiveBlastRadiusNodeIds,
+          agentFocusNodeIds: effectiveHighlightedNodeIds,
+          citationNodeIds: activeAICitationNodeIds,
+          toolNodeIds: activeAIToolNodeIds,
+          perfObserver,
+          perfLabel: mode === '2d' ? 'sigma' : 'three',
+        });
+        const previousTargetGraph =
+          mode === '2d' ? renderGraph2DRef.current : renderGraph3DRef.current;
+        const fallbackPositionGraph =
+          mode === '2d' ? renderGraph3DRef.current : renderGraph2DRef.current;
+
+        if (preservePositions) {
+          preserveGraphPositions(previousTargetGraph, targetGraph, mode === '3d');
+          if (!previousTargetGraph) {
+            preserveGraphPositions(fallbackPositionGraph, targetGraph, mode === '3d');
+          }
+        }
+
+        const currentFilterState = graphFilterStateRef.current;
+        if (targetGraph.order > 0) {
+          filterGraphByDepth(
+            targetGraph,
+            currentFilterState.selectedNodeId,
+            currentFilterState.depthFilter,
+            currentFilterState.visibleLabels,
+          );
+        }
+
+        if (mode === '2d') {
+          renderGraph2DRef.current = targetGraph;
+        } else {
+          renderGraph3DRef.current = targetGraph;
+        }
+
+        return targetGraph;
+      },
+      [
+        activeAICitationNodeIds,
+        activeAIToolNodeIds,
+        effectiveBlastRadiusNodeIds,
+        effectiveHighlightedNodeIds,
+        graph,
+        graphColorMode,
+        nodeById,
+        perfObserver,
+      ],
+    );
+
+    const syncRendererGraph = useCallback(
+      (mode: GraphViewMode, visualOnlyUpdate = false) => {
+        if (!graph) return false;
+
+        const previousTargetGraph =
+          mode === '2d' ? renderGraph2DRef.current : renderGraph3DRef.current;
+        const fallbackPositionGraph =
+          mode === '2d' ? renderGraph3DRef.current : renderGraph2DRef.current;
+        const shouldPreservePositions = Boolean(
+          visualOnlyUpdate || previousTargetGraph || fallbackPositionGraph,
+        );
+        const shouldPreserveViewport = Boolean(previousTargetGraph);
+        const targetGraph = buildRenderGraphForMode(mode, shouldPreservePositions);
+        if (!targetGraph) return false;
+
+        if (mode === '2d') {
+          setSigmaGraph(targetGraph, {
+            runLayout: !shouldPreserveViewport,
+            resetCamera: !shouldPreserveViewport,
+            clearSelection: false,
+          });
+        } else {
+          setThreeGraph(targetGraph, {
+            runLayout: !shouldPreserveViewport,
+            resetCamera: !shouldPreserveViewport,
+            clearSelection: false,
+            preservePositions: shouldPreservePositions,
+          });
+        }
+
+        return true;
+      },
+      [buildRenderGraphForMode, graph, setSigmaGraph, setThreeGraph],
+    );
+
+    // Update only the active render graph when KnowledgeGraph or visual options change.
+    useEffect(() => {
+      if (!graph) return;
+
       const visualOnlyUpdate = previousKnowledgeGraphRef.current === graph;
       const graphDiff =
         previousKnowledgeGraphRef.current && !visualOnlyUpdate
           ? diffKnowledgeGraphs(previousKnowledgeGraphRef.current, graph)
           : null;
-      const previous2DGraph = renderGraph2DRef.current;
-      const previous3DGraph = renderGraph3DRef.current;
-      const hasExistingRenderGraph = Boolean(previous2DGraph || previous3DGraph);
-      const shouldPreserveViewport = visualOnlyUpdate || hasExistingRenderGraph;
-      const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships, {
-        ...graphologyOptions,
-        perfObserver,
-        perfLabel: 'sigma',
-      });
-      const threeGraph = knowledgeGraphToGraphology(graph, communityMemberships, {
-        ...graphologyOptions,
-        perfObserver,
-        perfLabel: 'three',
-      });
-
-      if (shouldPreserveViewport) {
-        preserveGraphPositions(previous2DGraph, sigmaGraph);
-        preserveGraphPositions(previous3DGraph, threeGraph, true);
-      }
 
       if (graphDiff?.hasChanges) {
         setGraphChangeSummary(graphDiff);
@@ -823,57 +903,37 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         setGraphChangeAnimations(new Map());
       }
 
-      renderGraph2DRef.current = sigmaGraph;
-      renderGraph3DRef.current = threeGraph;
-      setSigmaGraph(sigmaGraph, {
-        runLayout: !shouldPreserveViewport,
-        resetCamera: !shouldPreserveViewport,
-        clearSelection: false,
-      });
-      setThreeGraph(threeGraph, {
-        runLayout: !shouldPreserveViewport,
-        resetCamera: !shouldPreserveViewport,
-        clearSelection: false,
-        preservePositions: shouldPreserveViewport,
-      });
+      const activeMode = graphViewModeRef.current;
+      syncRendererGraph(activeMode, visualOnlyUpdate);
       previousKnowledgeGraphRef.current = graph;
-      if (graphViewModeRef.current === '2d') {
+      if (activeMode === '2d') {
         stopThreeLayout();
       } else {
         stopSigmaLayout();
       }
-    }, [
-      graph,
-      nodeById,
-      setSigmaGraph,
-      setThreeGraph,
-      stopSigmaLayout,
-      stopThreeLayout,
-      graphColorMode,
-      effectiveBlastRadiusNodeIds,
-      effectiveHighlightedNodeIds,
-      activeAICitationNodeIds,
-      activeAIToolNodeIds,
-      perfObserver,
-    ]);
+    }, [graph, syncRendererGraph, stopSigmaLayout, stopThreeLayout]);
 
     // Update node visibility when filters change
     useEffect(() => {
-      const sigmaGraph = renderGraph2DRef.current;
-      const threeGraph = renderGraph3DRef.current;
-      if (!sigmaGraph && !threeGraph) return;
+      const activeRenderGraph =
+        graphViewMode === '2d' ? renderGraph2DRef.current : renderGraph3DRef.current;
+      if (!activeRenderGraph || activeRenderGraph.order === 0) return;
 
-      if (sigmaGraph && sigmaGraph.order > 0) {
-        filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
+      filterGraphByDepth(
+        activeRenderGraph,
+        appSelectedNode?.id || null,
+        depthFilter,
+        visibleLabels,
+      );
+      if (graphViewMode === '2d') {
+        refreshSigmaHighlights();
+      } else {
+        refreshThreeHighlights();
       }
-      if (threeGraph && threeGraph.order > 0) {
-        filterGraphByDepth(threeGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
-      }
-      refreshSigmaHighlights();
-      refreshThreeHighlights();
     }, [
       graph,
       graphColorMode,
+      graphViewMode,
       visibleLabels,
       depthFilter,
       appSelectedNode,
@@ -888,19 +948,42 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     // Sync app selected node with both renderers
     useEffect(() => {
       const selectedNodeId = appSelectedNode?.id || null;
-      setSigmaSelectedNode(selectedNodeId);
-      setThreeSelectedNode(selectedNodeId);
-    }, [appSelectedNode, graphColorMode, setSigmaSelectedNode, setThreeSelectedNode]);
+      if (graphViewMode === '2d') {
+        setSigmaSelectedNode(selectedNodeId);
+      } else {
+        setThreeSelectedNode(selectedNodeId);
+      }
+    }, [
+      appSelectedNode,
+      graphColorMode,
+      graphViewMode,
+      setSigmaSelectedNode,
+      setThreeSelectedNode,
+    ]);
 
     useEffect(() => {
+      if (previousGraphViewModeRef.current === graphViewMode) return;
+      previousGraphViewModeRef.current = graphViewMode;
+
       if (graphViewMode === '2d') {
         stopThreeLayout();
         setCameraMode('arcball');
+        syncRendererGraph('2d', true);
       } else {
+        const hadThreeGraph = Boolean(renderGraph3DRef.current);
         stopSigmaLayout();
-        startThreeLayout();
+        if (syncRendererGraph('3d', true) && hadThreeGraph) {
+          startThreeLayout();
+        }
       }
-    }, [graphViewMode, stopSigmaLayout, stopThreeLayout, startThreeLayout, setCameraMode]);
+    }, [
+      graphViewMode,
+      setCameraMode,
+      startThreeLayout,
+      stopSigmaLayout,
+      stopThreeLayout,
+      syncRendererGraph,
+    ]);
 
     useEffect(() => {
       if (

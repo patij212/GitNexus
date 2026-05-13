@@ -35,6 +35,7 @@ import type { NodeAnimation } from './useAppState';
 export type ThreeGraphCameraMode = 'arcball' | 'firstPerson';
 
 interface UseThreeGraphOptions {
+  isActive?: boolean;
   onNodeClick?: (nodeId: string) => void;
   onNodeHover?: (nodeId: string | null) => void;
   onStageClick?: () => void;
@@ -295,8 +296,11 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
   const cameraModeRef = useRef<ThreeGraphCameraMode>('arcball');
   const optionsRef = useRef(options);
+  const isActiveRef = useRef(options.isActive ?? true);
   const keyStateRef = useRef<Set<string>>(new Set());
   const animationFrameRef = useRef<number | null>(null);
+  const resumeAnimationLoopRef = useRef<(() => void) | null>(null);
+  const pauseAnimationLoopRef = useRef<(() => void) | null>(null);
   const edgePositionsRef = useRef<Float32Array | null>(null);
   const edgeColorsRef = useRef<Float32Array | null>(null);
   const sparkPositionsRef = useRef<Float32Array | null>(null);
@@ -313,7 +317,10 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
   useEffect(() => {
     optionsRef.current = options;
+    isActiveRef.current = options.isActive ?? true;
   }, [options]);
+
+  const isRendererActive = useCallback(() => isActiveRef.current, []);
 
   const markSceneDirty = useCallback((flags: Partial<SceneDirtyFlags>) => {
     Object.assign(sceneDirtyRef.current, flags);
@@ -426,6 +433,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
   const updateSceneObjects = useCallback(
     (label = 'unspecified') => {
+      if (!isRendererActive()) return;
+
       const dirty = sceneDirtyRef.current;
       if (animatedNodesRef.current.size > 0) {
         dirty.animation = true;
@@ -715,7 +724,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       dirty.animation = false;
       finishSceneUpdate();
     },
-    [getNodeVisual],
+    [getNodeVisual, isRendererActive],
   );
 
   const frameNodes = useCallback(
@@ -764,7 +773,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   }, [markGraphPositionsDirty]);
 
   const startLayout = useCallback(() => {
-    if (nodesRef.current.length === 0) return;
+    if (nodesRef.current.length === 0 || !isRendererActive()) return;
 
     simulationRef.current?.stop();
 
@@ -815,7 +824,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     layoutRunningRef.current = true;
     markGraphPositionsDirty();
     setIsLayoutRunning(true);
-  }, [markGraphPositionsDirty]);
+  }, [isRendererActive, markGraphPositionsDirty]);
 
   const disposeSceneObjects = useCallback(() => {
     const scene = sceneRef.current;
@@ -867,7 +876,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       options: ThreeSetGraphOptions = {},
     ) => {
       const scene = sceneRef.current;
-      if (!scene) return;
+      if (!scene || !isRendererActive()) return;
 
       const shouldRunLayout = options.runLayout ?? true;
       const shouldResetCamera = options.resetCamera ?? true;
@@ -1095,6 +1104,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     [
       disposeSceneObjects,
       frameNodes,
+      isRendererActive,
       markSceneFullyDirty,
       setSelectedNode,
       startLayout,
@@ -1128,11 +1138,11 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
   const focusNode = useCallback(
     (nodeId: string) => {
-      if (!nodeIndexRef.current.has(nodeId)) return;
+      if (!nodeIndexRef.current.has(nodeId) || !isRendererActive()) return;
       setSelectedNode(nodeId);
       frameNodes(nodeId);
     },
-    [frameNodes, setSelectedNode],
+    [frameNodes, isRendererActive, setSelectedNode],
   );
 
   const zoomToward = useCallback(
@@ -1161,8 +1171,10 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
   const refreshHighlights = useCallback(() => {
     markGraphVisualsDirty(true);
-    updateSceneObjects('refreshHighlights');
-  }, [markGraphVisualsDirty, updateSceneObjects]);
+    if (isRendererActive()) {
+      updateSceneObjects('refreshHighlights');
+    }
+  }, [isRendererActive, markGraphVisualsDirty, updateSceneObjects]);
 
   useEffect(() => {
     highlightedRef.current = options.highlightedNodeIds || new Set();
@@ -1170,12 +1182,16 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
     markGraphVisualsDirty(true);
-    updateSceneObjects('visual-options');
+    if (isRendererActive()) {
+      updateSceneObjects('visual-options');
+    }
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    options.isActive,
+    isRendererActive,
     markGraphVisualsDirty,
     updateSceneObjects,
   ]);
@@ -1335,6 +1351,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       const mesh = nodeMeshRef.current;
       if (
         !mesh ||
+        !isActiveRef.current ||
         pointerLock.isLocked ||
         rendererRef.current !== renderer ||
         !renderer.domElement.isConnected
@@ -1370,6 +1387,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
 
     const getHoverPickSkipReason = (request: HoverPickRequest, time: number): string | null => {
+      if (!isActiveRef.current) return 'skipped:inactive';
       if (rendererRef.current !== renderer || !renderer.domElement.isConnected) {
         return 'skipped:inactive';
       }
@@ -1437,6 +1455,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
 
     const handlePointerMove = (event: PointerEvent) => {
+      if (!isActiveRef.current) return;
+
       if (pointerIsDown) {
         const deltaX = event.clientX - pointerDownClientX;
         const deltaY = event.clientY - pointerDownClientY;
@@ -1460,6 +1480,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      if (!isActiveRef.current) return;
+
       pointerIsDown = true;
       pointerIsDragging = false;
       pointerDownClientX = event.clientX;
@@ -1471,6 +1493,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
 
     const handlePointerUp = (event: PointerEvent) => {
+      if (!isActiveRef.current) return;
+
       pointerIsDown = false;
       pointerIsDragging = false;
       cancelPendingHoverPick();
@@ -1491,6 +1515,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
 
     const handlePointerLeave = () => {
+      if (!isActiveRef.current) return;
+
       pointerIsDown = false;
       pointerIsDragging = false;
       cancelPendingHoverPick();
@@ -1504,10 +1530,12 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isActiveRef.current) return;
       keyStateRef.current.add(event.code);
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
+      if (!isActiveRef.current) return;
       keyStateRef.current.delete(event.code);
     };
 
@@ -1519,6 +1547,12 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     window.addEventListener('keyup', handleKeyUp);
 
     const animate = (time: number) => {
+      if (!isActiveRef.current) {
+        animationFrameRef.current = null;
+        lastTimeRef.current = time;
+        return;
+      }
+
       animationFrameRef.current = requestAnimationFrame(animate);
       recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.threeRafTick, {
         label: cameraModeRef.current,
@@ -1560,7 +1594,22 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       renderer.render(scene, camera);
     };
 
-    animationFrameRef.current = requestAnimationFrame(animate);
+    const pauseAnimationLoop = () => {
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+
+    const resumeAnimationLoop = () => {
+      if (animationFrameRef.current !== null || !isActiveRef.current) return;
+      lastTimeRef.current = performance.now();
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    pauseAnimationLoopRef.current = pauseAnimationLoop;
+    resumeAnimationLoopRef.current = resumeAnimationLoop;
+    resumeAnimationLoop();
 
     return () => {
       resizeObserver.disconnect();
@@ -1576,10 +1625,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         interactionDprRestoreTimeout = null;
       }
 
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+      pauseAnimationLoop();
 
       simulationRef.current?.stop();
       simulationRef.current = null;
@@ -1594,12 +1640,41 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       rendererRef.current = null;
       arcballRef.current = null;
       pointerLockRef.current = null;
+      pauseAnimationLoopRef.current = null;
+      resumeAnimationLoopRef.current = null;
     };
   }, [
     disposeSceneObjects,
     markGraphPositionsDirty,
     markSceneDirty,
     setSelectedNode,
+    updateSceneObjects,
+  ]);
+
+  useEffect(() => {
+    isActiveRef.current = options.isActive ?? true;
+
+    if (!isRendererActive()) {
+      pauseAnimationLoopRef.current?.();
+      keyStateRef.current.clear();
+      stopLayout();
+      if (hoveredNodeRef.current !== null) {
+        hoveredNodeRef.current = null;
+        optionsRef.current.onNodeHover?.(null);
+        markGraphVisualsDirty(false);
+      }
+      return;
+    }
+
+    markSceneFullyDirty();
+    updateSceneObjects('resume');
+    resumeAnimationLoopRef.current?.();
+  }, [
+    options.isActive,
+    isRendererActive,
+    markGraphVisualsDirty,
+    markSceneFullyDirty,
+    stopLayout,
     updateSceneObjects,
   ]);
 
