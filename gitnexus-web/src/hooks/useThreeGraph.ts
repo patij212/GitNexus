@@ -30,6 +30,7 @@ import {
   startGraphPerfMeasure,
   type GraphPerfObserver,
 } from '../lib/graph-perf';
+import { getRelationCurveMultiplier, hashToUnit } from '../lib/graph-render-model';
 import type { NodeAnimation } from './useAppState';
 
 export type ThreeGraphCameraMode = 'arcball' | 'firstPerson';
@@ -176,23 +177,6 @@ const disposeMaterial = (material: THREE.Material | THREE.Material[]): void => {
     });
     item.dispose();
   });
-};
-
-const hashToUnit = (value: string): number => {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) / 0xffffffff;
-};
-
-const getRelationCurveMultiplier = (relationType?: string): number => {
-  if (relationType === 'CONTAINS' || relationType === 'DEFINES') return 0.085;
-  if (relationType === 'CALLS') return 0.24;
-  if (relationType === 'IMPORTS') return 0.18;
-  if (relationType === 'EXTENDS' || relationType === 'IMPLEMENTS') return 0.2;
-  return 0.15;
 };
 
 const setQuadraticPoint = (
