@@ -2,6 +2,7 @@ export const GRAPH_PERF_METRICS = {
   threeRafTick: 'three.raf.tick',
   threeSceneUpdate: 'three.scene.update',
   threePointerPick: 'three.pointer.pick',
+  threeDprChange: 'three.dpr.change',
   sigmaRefresh: 'sigma.refresh',
   graphAdapterConversion: 'graph.adapter.conversion',
 } as const;

@@ -97,6 +97,11 @@ type NodeVisual = {
   shellColor: string;
 };
 
+type HoverPickRequest = {
+  clientX: number;
+  clientY: number;
+};
+
 type SceneDirtyFlags = {
   nodeTransforms: boolean;
   nodeVisuals: boolean;
@@ -120,6 +125,14 @@ const createSceneDirtyFlags = (dirty = false): SceneDirtyFlags => ({
 });
 
 const BACKGROUND_COLOR = GRAPH_SURFACE_COLORS.background;
+const MAX_DEVICE_PIXEL_RATIO = 2;
+const INTERACTION_DEVICE_PIXEL_RATIO_CAP = 1.25;
+const INTERACTION_DPR_RESTORE_MS = 240;
+const HOVER_POINTER_MOVE_THRESHOLD_PX = 3;
+const HOVER_DRAG_THRESHOLD_PX = 5;
+const HOVER_CAMERA_IDLE_MS = 90;
+const CAMERA_POSITION_MOVEMENT_THRESHOLD_SQ = 0.01;
+const CAMERA_ROTATION_MOVEMENT_THRESHOLD = 0.0005;
 const EDGE_CURVE_SEGMENTS = 5;
 const WHITE_COLOR = new THREE.Color('#ffffff');
 const SCRATCH_SOURCE = new THREE.Vector3();
@@ -217,6 +230,12 @@ const getLayoutAlphaDecay = (nodeCount: number): number => {
   return 0.012;
 };
 
+const getHoverPickCadenceMs = (nodeCount: number): number => {
+  if (nodeCount > 5000) return 80;
+  if (nodeCount > 1500) return 48;
+  return 0;
+};
+
 const getNodePosition = (node: Graph3DNode): THREE.Vector3 => {
   return new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0);
 };
@@ -252,7 +271,7 @@ const getCameraTarget = (
 };
 
 export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraphReturn => {
-  const containerRef = useRef<HTMLDivElement>(null!);
+  const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -1179,7 +1198,11 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       antialias: true,
       powerPreference: 'high-performance',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    const readCappedPixelRatio = (cap: number) => Math.min(window.devicePixelRatio || 1, cap);
+    let activePixelRatio = readCappedPixelRatio(MAX_DEVICE_PIXEL_RATIO);
+    let usingInteractionPixelRatio = false;
+    let interactionDprRestoreTimeout: number | null = null;
+    renderer.setPixelRatio(activePixelRatio);
     renderer.setClearColor(BACKGROUND_COLOR, 1);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.NoToneMapping;
@@ -1189,6 +1212,39 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     renderer.domElement.style.width = '100%';
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
+
+    const applyPixelRatio = (cap: number, label: string) => {
+      const nextPixelRatio = readCappedPixelRatio(cap);
+      if (Math.abs(nextPixelRatio - activePixelRatio) < 0.01) return;
+
+      activePixelRatio = nextPixelRatio;
+      renderer.setPixelRatio(nextPixelRatio);
+      recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.threeDprChange, {
+        label: `${label}:${nextPixelRatio.toFixed(2)}`,
+      });
+    };
+
+    const restoreFullPixelRatio = (label = 'idle') => {
+      usingInteractionPixelRatio = false;
+      if (interactionDprRestoreTimeout !== null) {
+        window.clearTimeout(interactionDprRestoreTimeout);
+        interactionDprRestoreTimeout = null;
+      }
+      applyPixelRatio(MAX_DEVICE_PIXEL_RATIO, label);
+    };
+
+    const requestInteractionPixelRatio = (label: string) => {
+      usingInteractionPixelRatio = true;
+      applyPixelRatio(INTERACTION_DEVICE_PIXEL_RATIO_CAP, label);
+
+      if (interactionDprRestoreTimeout !== null) {
+        window.clearTimeout(interactionDprRestoreTimeout);
+      }
+      interactionDprRestoreTimeout = window.setTimeout(() => {
+        interactionDprRestoreTimeout = null;
+        restoreFullPixelRatio('idle');
+      }, INTERACTION_DPR_RESTORE_MS);
+    };
 
     scene.add(new THREE.HemisphereLight('#e0f2fe', '#111827', 1.35));
     const keyLight = new THREE.DirectionalLight('#ffffff', 1.8);
@@ -1218,10 +1274,26 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
+    const lastDprCameraPosition = camera.position.clone();
+    const lastDprCameraQuaternion = camera.quaternion.clone();
+    let hoverPickFrame: number | null = null;
+    let pendingHoverPick: HoverPickRequest | null = null;
+    let lastHoverPickClientX = Number.NaN;
+    let lastHoverPickClientY = Number.NaN;
+    let lastHoverPickTime = 0;
+    let pointerIsDown = false;
+    let pointerIsDragging = false;
+    let pointerDownClientX = 0;
+    let pointerDownClientY = 0;
+    let cameraMovingUntil = 0;
 
     const resize = () => {
       const width = Math.max(1, container.clientWidth);
       const height = Math.max(1, container.clientHeight);
+      applyPixelRatio(
+        usingInteractionPixelRatio ? INTERACTION_DEVICE_PIXEL_RATIO_CAP : MAX_DEVICE_PIXEL_RATIO,
+        usingInteractionPixelRatio ? 'resize:interaction' : 'resize:full',
+      );
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
@@ -1232,19 +1304,55 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     resizeObserver.observe(container);
     resize();
 
-    const pickNode = (event: PointerEvent): string | null => {
+    const recordHoverPickGate = (label: string) => {
+      recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.threePointerPick, {
+        label: `hover:${label}`,
+      });
+    };
+
+    const getPointerCursor = (nodeId: string | null): string =>
+      nodeId ? 'pointer' : cameraModeRef.current === 'arcball' ? 'grab' : 'crosshair';
+
+    const cancelPendingHoverPick = () => {
+      pendingHoverPick = null;
+      if (hoverPickFrame !== null) {
+        cancelAnimationFrame(hoverPickFrame);
+        hoverPickFrame = null;
+      }
+    };
+
+    const applyHoveredNode = (nodeId: string | null, label: string) => {
+      if (hoveredNodeRef.current !== nodeId) {
+        hoveredNodeRef.current = nodeId;
+        optionsRef.current.onNodeHover?.(nodeId);
+        markSceneDirty({ nodeVisuals: true });
+        updateSceneObjects(label);
+      }
+      container.style.cursor = getPointerCursor(nodeId);
+    };
+
+    const pickNode = (clientX: number, clientY: number, label: string): string | null => {
       const mesh = nodeMeshRef.current;
-      if (!mesh || pointerLock.isLocked) return null;
+      if (
+        !mesh ||
+        pointerLock.isLocked ||
+        rendererRef.current !== renderer ||
+        !renderer.domElement.isConnected
+      ) {
+        return null;
+      }
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
 
       const finishPointerPick = startGraphPerfMeasure(
         optionsRef.current.perfObserver,
         GRAPH_PERF_METRICS.threePointerPick,
-        { label: event.type },
+        { label },
       );
 
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
 
       const intersections = raycaster.intersectObject(mesh, false);
@@ -1261,29 +1369,116 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       return null;
     };
 
-    const handlePointerMove = (event: PointerEvent) => {
-      const nodeId = pickNode(event);
-      if (hoveredNodeRef.current !== nodeId) {
-        hoveredNodeRef.current = nodeId;
-        optionsRef.current.onNodeHover?.(nodeId);
-        markSceneDirty({ nodeVisuals: true });
-        updateSceneObjects('pointer-hover');
+    const getHoverPickSkipReason = (request: HoverPickRequest, time: number): string | null => {
+      if (rendererRef.current !== renderer || !renderer.domElement.isConnected) {
+        return 'skipped:inactive';
       }
-      container.style.cursor = nodeId
-        ? 'pointer'
-        : cameraModeRef.current === 'arcball'
-          ? 'grab'
-          : 'crosshair';
+      if (!nodeMeshRef.current) return 'skipped:no-mesh';
+      if (pointerLock.isLocked) return 'skipped:pointer-lock';
+      if (pointerIsDragging) return 'skipped:dragging';
+      if (time < cameraMovingUntil) return 'skipped:camera-moving';
+
+      if (Number.isFinite(lastHoverPickClientX) && Number.isFinite(lastHoverPickClientY)) {
+        const deltaX = request.clientX - lastHoverPickClientX;
+        const deltaY = request.clientY - lastHoverPickClientY;
+        if (
+          deltaX * deltaX + deltaY * deltaY <
+          HOVER_POINTER_MOVE_THRESHOLD_PX * HOVER_POINTER_MOVE_THRESHOLD_PX
+        ) {
+          return 'skipped:stationary';
+        }
+      }
+
+      const hoverCadenceMs = getHoverPickCadenceMs(nodesRef.current.length);
+      if (
+        hoverCadenceMs > 0 &&
+        lastHoverPickTime > 0 &&
+        time - lastHoverPickTime < hoverCadenceMs
+      ) {
+        return 'throttled:cadence';
+      }
+
+      return null;
     };
 
-    const handlePointerDown = () => {
+    const flushHoverPick = (time: number) => {
+      hoverPickFrame = null;
+      const request = pendingHoverPick;
+      if (!request) return;
+
+      const skipReason = getHoverPickSkipReason(request, time);
+      if (skipReason) {
+        recordHoverPickGate(skipReason);
+        if (skipReason === 'throttled:cadence' || skipReason === 'skipped:camera-moving') {
+          hoverPickFrame = requestAnimationFrame(flushHoverPick);
+        } else {
+          pendingHoverPick = null;
+        }
+        return;
+      }
+
+      pendingHoverPick = null;
+      lastHoverPickClientX = request.clientX;
+      lastHoverPickClientY = request.clientY;
+      lastHoverPickTime = time;
+      applyHoveredNode(
+        pickNode(request.clientX, request.clientY, 'pointermove:hover'),
+        'pointer-hover',
+      );
+    };
+
+    const scheduleHoverPick = (event: PointerEvent) => {
+      pendingHoverPick = { clientX: event.clientX, clientY: event.clientY };
+      if (hoverPickFrame !== null) {
+        recordHoverPickGate('throttled:frame');
+        return;
+      }
+      hoverPickFrame = requestAnimationFrame(flushHoverPick);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (pointerIsDown) {
+        const deltaX = event.clientX - pointerDownClientX;
+        const deltaY = event.clientY - pointerDownClientY;
+        if (
+          deltaX * deltaX + deltaY * deltaY >=
+          HOVER_DRAG_THRESHOLD_PX * HOVER_DRAG_THRESHOLD_PX
+        ) {
+          pointerIsDragging = true;
+          requestInteractionPixelRatio('pointer-drag');
+        }
+      }
+
+      if (pointerIsDragging) {
+        cancelPendingHoverPick();
+        recordHoverPickGate('skipped:dragging');
+        container.style.cursor = cameraModeRef.current === 'arcball' ? 'grabbing' : 'crosshair';
+        return;
+      }
+
+      scheduleHoverPick(event);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      pointerIsDown = true;
+      pointerIsDragging = false;
+      pointerDownClientX = event.clientX;
+      pointerDownClientY = event.clientY;
+      requestInteractionPixelRatio('pointerdown');
       if (cameraModeRef.current === 'arcball') {
         container.style.cursor = 'grabbing';
       }
     };
 
     const handlePointerUp = (event: PointerEvent) => {
-      const nodeId = pickNode(event);
+      pointerIsDown = false;
+      pointerIsDragging = false;
+      cancelPendingHoverPick();
+
+      const nodeId = pickNode(event.clientX, event.clientY, 'pointerup');
+      lastHoverPickClientX = event.clientX;
+      lastHoverPickClientY = event.clientY;
+      lastHoverPickTime = performance.now();
       if (nodeId) {
         setSelectedNode(nodeId);
         optionsRef.current.onNodeClick?.(nodeId);
@@ -1292,14 +1487,13 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         hoveredNodeRef.current = null;
         optionsRef.current.onStageClick?.();
       }
-      container.style.cursor = nodeId
-        ? 'pointer'
-        : cameraModeRef.current === 'arcball'
-          ? 'grab'
-          : 'crosshair';
+      container.style.cursor = getPointerCursor(nodeId);
     };
 
     const handlePointerLeave = () => {
+      pointerIsDown = false;
+      pointerIsDragging = false;
+      cancelPendingHoverPick();
       if (hoveredNodeRef.current !== null) {
         hoveredNodeRef.current = null;
         optionsRef.current.onNodeHover?.(null);
@@ -1348,6 +1542,17 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         arcball.update();
       }
 
+      const cameraMoved =
+        lastDprCameraPosition.distanceToSquared(camera.position) >
+          CAMERA_POSITION_MOVEMENT_THRESHOLD_SQ ||
+        lastDprCameraQuaternion.angleTo(camera.quaternion) > CAMERA_ROTATION_MOVEMENT_THRESHOLD;
+      if (cameraMoved) {
+        lastDprCameraPosition.copy(camera.position);
+        lastDprCameraQuaternion.copy(camera.quaternion);
+        cameraMovingUntil = Math.max(cameraMovingUntil, time + HOVER_CAMERA_IDLE_MS);
+        requestInteractionPixelRatio('camera');
+      }
+
       if (layoutRunningRef.current) {
         markGraphPositionsDirty();
       }
@@ -1365,6 +1570,11 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       renderer.domElement.removeEventListener('pointerleave', handlePointerLeave);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      cancelPendingHoverPick();
+      if (interactionDprRestoreTimeout !== null) {
+        window.clearTimeout(interactionDprRestoreTimeout);
+        interactionDprRestoreTimeout = null;
+      }
 
       if (animationFrameRef.current !== null) {
         cancelAnimationFrame(animationFrameRef.current);
