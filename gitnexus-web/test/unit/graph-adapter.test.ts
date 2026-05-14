@@ -261,6 +261,32 @@ describe('graph visibility snapshots', () => {
     expect(changed.generation).toBe(first.generation + 1);
   });
 
+  it('treats equivalent edge-type filters as stable and semantic edge changes as new generations', () => {
+    const { renderGraph } = createVisibilityFixture();
+    const first = computeGraphVisibilitySnapshot(renderGraph, {
+      selectedNodeId: null,
+      maxHops: null,
+      visibleLabels: ['File', 'Function', 'Class'],
+      visibleEdgeTypes: ['CALLS', 'CONTAINS'],
+    });
+    const sameEdgeTypesDifferentOrder = computeGraphVisibilitySnapshot(renderGraph, {
+      selectedNodeId: null,
+      maxHops: null,
+      visibleLabels: ['Class', 'Function', 'File'],
+      visibleEdgeTypes: ['CONTAINS', 'CALLS', 'CALLS'],
+    });
+    const changedEdgeTypes = computeGraphVisibilitySnapshot(renderGraph, {
+      selectedNodeId: null,
+      maxHops: null,
+      visibleLabels: ['File', 'Function', 'Class'],
+      visibleEdgeTypes: ['CALLS'],
+    });
+
+    expect(sameEdgeTypesDifferentOrder).toBe(first);
+    expect(changedEdgeTypes.generation).toBe(first.generation + 1);
+    expect(changedEdgeTypes.visibleEdgeCount).toBeLessThan(first.visibleEdgeCount);
+  });
+
   it('applies graphology hidden attrs once per generation for renderer compatibility', () => {
     const { file, main, helper, service, renderGraph } = createVisibilityFixture();
 
@@ -285,6 +311,27 @@ describe('graph visibility snapshots', () => {
 
     expect(skipped.applied).toBe(false);
     expect(setNodeAttributeSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps hidden attrs correct when a later generation reveals nodes again', () => {
+    const { file, main, helper, service, renderGraph } = createVisibilityFixture();
+
+    applyGraphVisibilityFilter(renderGraph, {
+      selectedNodeId: main.id,
+      maxHops: 1,
+      visibleLabels: ['Function'],
+    });
+    const revealed = applyGraphVisibilityFilter(renderGraph, {
+      selectedNodeId: null,
+      maxHops: null,
+      visibleLabels: ['File', 'Function', 'Class'],
+    });
+
+    expect(revealed.applied).toBe(true);
+    expect(renderGraph.getNodeAttribute(file.id, 'hidden')).toBe(false);
+    expect(renderGraph.getNodeAttribute(main.id, 'hidden')).toBe(false);
+    expect(renderGraph.getNodeAttribute(helper.id, 'hidden')).toBe(false);
+    expect(renderGraph.getNodeAttribute(service.id, 'hidden')).toBe(false);
   });
 
   it('preserves filterGraphByDepth as a hidden-attr compatibility wrapper', () => {

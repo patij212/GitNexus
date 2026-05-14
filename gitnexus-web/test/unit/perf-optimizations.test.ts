@@ -114,4 +114,17 @@ describe('layout pressure caps', () => {
     });
     expect(getNoverlapPolicy(16000)).toEqual({ mode: 'skip', label: 'skip:huge' });
   });
+
+  it('locks noverlap policy thresholds at boundary sizes', () => {
+    expect(getNoverlapPolicy(1)).toEqual({ mode: 'skip', label: 'skip:single-node' });
+    expect(getNoverlapPolicy(2).mode).toBe('sync');
+    expect(getNoverlapSettings(2000).maxIterations).toBe(80);
+    expect(getNoverlapSettings(2001).maxIterations).toBe(55);
+    expect(getNoverlapPolicy(5000).mode).toBe('sync');
+    expect(getNoverlapPolicy(5001).mode).toBe('defer');
+    expect(getNoverlapSettings(10000).maxIterations).toBe(28);
+    expect(getNoverlapSettings(10001).maxIterations).toBe(18);
+    expect(getNoverlapPolicy(15000).mode).toBe('defer');
+    expect(getNoverlapPolicy(15001)).toEqual({ mode: 'skip', label: 'skip:huge' });
+  });
 });

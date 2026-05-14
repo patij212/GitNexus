@@ -4,6 +4,7 @@ import {
   buildGraphRenderModel,
   colorToNumber,
   createVisibilityBitset,
+  graphRenderModelToGraphology,
 } from '../../src/lib/graph-render-model';
 import {
   createCallsRelationship,
@@ -30,9 +31,42 @@ describe('buildGraphRenderModel', () => {
     expect(first.edgeIds).toEqual(second.edgeIds);
     expect(Array.from(first.nodePositions)).toEqual(Array.from(second.nodePositions));
     expect(Array.from(first.nodeColors)).toEqual(Array.from(second.nodeColors));
+    expect(Array.from(first.nodeSeeds)).toEqual(Array.from(second.nodeSeeds));
     expect(Array.from(first.edgeSourceIndices)).toEqual(Array.from(second.edgeSourceIndices));
     expect(Array.from(first.edgeTargetIndices)).toEqual(Array.from(second.edgeTargetIndices));
+    expect(Array.from(first.edgeColors)).toEqual(Array.from(second.edgeColors));
+    expect(Array.from(first.edgeSeeds)).toEqual(Array.from(second.edgeSeeds));
+    expect(Array.from(first.edgeCurvatureSeeds)).toEqual(Array.from(second.edgeCurvatureSeeds));
     expect(Array.from(first.edgeCurvatures)).toEqual(Array.from(second.edgeCurvatures));
+    expect(Array.from(first.edgeCurveMultipliers)).toEqual(Array.from(second.edgeCurveMultipliers));
+  });
+
+  it('round-trips stable model indexes, colors, and curvature into graphology attrs', () => {
+    const graph = createDeterministicKnowledgeGraphFixture({ fileCount: 2, functionsPerFile: 2 });
+    const model = buildGraphRenderModel(graph);
+    const renderGraph = graphRenderModelToGraphology(model);
+
+    model.nodes.forEach((node, index) => {
+      const attrs = renderGraph.getNodeAttributes(node.id);
+
+      expect(node.index).toBe(index);
+      expect(model.nodeIdToIndex.get(node.id)).toBe(index);
+      expect(attrs.x).toBe(node.attributes.x);
+      expect(attrs.y).toBe(node.attributes.y);
+      expect(attrs.color).toBe(node.attributes.color);
+      expect(colorToNumber(attrs.color)).toBe(model.nodeColors[index]);
+    });
+
+    model.edges.forEach((edge, index) => {
+      const attrs = renderGraph.getEdgeAttributes(edge.id);
+
+      expect(edge.index).toBe(index);
+      expect(model.edgeIdToIndex.get(edge.id)).toBe(index);
+      expect(renderGraph.extremities(edge.id)).toEqual([edge.sourceId, edge.targetId]);
+      expect(attrs.curvature).toBe(edge.attributes.curvature);
+      expect(attrs.color).toBe(edge.attributes.color);
+      expect(colorToNumber(attrs.color)).toBe(model.edgeColors[index]);
+    });
   });
 
   it('exposes stable ids, id indexes, typed array lengths, and numeric colors', () => {

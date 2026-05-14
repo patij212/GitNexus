@@ -56,6 +56,28 @@ describe('graph perf instrumentation', () => {
     expect(snapshot[GRAPH_PERF_METRICS.threeSceneUpdate]?.labels.frame.lastDurationMs).toBe(12.5);
   });
 
+  it('ignores non-positive counts and records each measure once', () => {
+    let now = 0;
+    const collector = createGraphPerfCollector({
+      enabled: true,
+      now: () => now,
+    });
+    const finishSceneUpdate = startGraphPerfMeasure(collector, GRAPH_PERF_METRICS.threeSceneUpdate);
+
+    recordGraphPerf(collector, GRAPH_PERF_METRICS.threeRafTick, { count: 0 });
+    recordGraphPerf(collector, GRAPH_PERF_METRICS.threeRafTick, { count: -1 });
+    now = 7;
+    finishSceneUpdate();
+    now = 20;
+    finishSceneUpdate();
+
+    const snapshot = collector.snapshot();
+    expect(snapshot[GRAPH_PERF_METRICS.threeRafTick]).toBeUndefined();
+    expect(snapshot[GRAPH_PERF_METRICS.threeSceneUpdate]?.count).toBe(1);
+    expect(snapshot[GRAPH_PERF_METRICS.threeSceneUpdate]?.totalDurationMs).toBe(7);
+    expect(snapshot[GRAPH_PERF_METRICS.threeSceneUpdate]?.maxDurationMs).toBe(7);
+  });
+
   it('records graph adapter conversion duration for deterministic fixtures', () => {
     let now = 0;
     const collector = createGraphPerfCollector({
