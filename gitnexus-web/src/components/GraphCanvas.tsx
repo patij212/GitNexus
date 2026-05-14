@@ -39,7 +39,7 @@ import { useAppState } from '../hooks/useAppState';
 import type { NodeAnimation } from '../hooks/useAppState';
 import {
   knowledgeGraphToGraphology,
-  filterGraphByDepth,
+  applyGraphVisibilityFilter,
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
 } from '../lib/graph-adapter';
@@ -807,12 +807,11 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         const currentFilterState = graphFilterStateRef.current;
         if (targetGraph.order > 0) {
-          filterGraphByDepth(
-            targetGraph,
-            currentFilterState.selectedNodeId,
-            currentFilterState.depthFilter,
-            currentFilterState.visibleLabels,
-          );
+          applyGraphVisibilityFilter(targetGraph, {
+            selectedNodeId: currentFilterState.selectedNodeId,
+            maxHops: currentFilterState.depthFilter,
+            visibleLabels: currentFilterState.visibleLabels,
+          });
         }
 
         if (mode === '2d') {
@@ -919,28 +918,23 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         graphViewMode === '2d' ? renderGraph2DRef.current : renderGraph3DRef.current;
       if (!activeRenderGraph || activeRenderGraph.order === 0) return;
 
-      filterGraphByDepth(
-        activeRenderGraph,
-        appSelectedNode?.id || null,
-        depthFilter,
+      const visibilityResult = applyGraphVisibilityFilter(activeRenderGraph, {
+        selectedNodeId: appSelectedNode?.id || null,
+        maxHops: depthFilter,
         visibleLabels,
-      );
+      });
+      if (!visibilityResult.applied) return;
+
       if (graphViewMode === '2d') {
         refreshSigmaHighlights();
       } else {
         refreshThreeHighlights();
       }
     }, [
-      graph,
-      graphColorMode,
       graphViewMode,
       visibleLabels,
       depthFilter,
-      appSelectedNode,
-      effectiveBlastRadiusNodeIds,
-      effectiveHighlightedNodeIds,
-      aiCitationHighlightedNodeIds,
-      aiToolHighlightedNodeIds,
+      appSelectedNode?.id,
       refreshSigmaHighlights,
       refreshThreeHighlights,
     ]);
