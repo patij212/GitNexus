@@ -10,11 +10,14 @@ import type { NodeAnimation } from './useAppState';
 import { GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
 import { resolveGraphEdgeVisual, resolveGraphNodeVisual } from '../lib/graph-visual-state';
 import { GRAPH_PERF_METRICS, recordGraphPerf, type GraphPerfObserver } from '../lib/graph-perf';
+import { getNoverlapPolicy } from '../lib/graph-layout-policy';
 import {
   createActiveAnimationSnapshot,
   createAnimationCacheKey,
   createStableCollectionSignature,
 } from '../lib/sigma-visual-cache';
+
+export { getNoverlapPolicy, getNoverlapSettings } from '../lib/graph-layout-policy';
 
 interface UseSigmaOptions {
   isActive?: boolean;
@@ -136,13 +139,6 @@ const measureLayoutMovement = (
   };
 };
 
-export const getNoverlapSettings = (nodeCount: number) => ({
-  maxIterations: nodeCount > 10000 ? 32 : nodeCount > 5000 ? 42 : nodeCount > 2000 ? 55 : 80,
-  ratio: nodeCount > 5000 ? 1.04 : 1.1,
-  margin: nodeCount > 5000 ? 6 : 10,
-  expansion: 1.05,
-});
-
 // ForceAtlas2 settings - optimized for fast convergence from the seeded hierarchy/community layout.
 export const getFA2Settings = (nodeCount: number) => {
   const isSmall = nodeCount < 500;
@@ -253,6 +249,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const isActiveRef = useRef(options.isActive ?? true);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noverlapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutRunIdRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
   const graphVersionRef = useRef(0);
@@ -339,6 +336,10 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       clearInterval(layoutMonitorRef.current);
       layoutMonitorRef.current = null;
     }
+    if (noverlapTimeoutRef.current) {
+      clearTimeout(noverlapTimeoutRef.current);
+      noverlapTimeoutRef.current = null;
+    }
   }, []);
 
   const finishLayoutRun = useCallback(
@@ -352,9 +353,30 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         layoutRef.current = null;
       }
 
-      if (runNoverlap && isRendererActive() && graph.order > 1) {
-        noverlap.assign(graph, getNoverlapSettings(graph.order));
-        refreshSigma('noverlap');
+      if (runNoverlap && isRendererActive()) {
+        const policy = getNoverlapPolicy(graph.order);
+        recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.sigmaRefresh, {
+          label: `noverlap:${policy.label}`,
+        });
+
+        if (policy.mode === 'sync') {
+          noverlap.assign(graph, policy.settings);
+          refreshSigma('noverlap:sync');
+        } else if (policy.mode === 'defer') {
+          noverlapTimeoutRef.current = setTimeout(() => {
+            noverlapTimeoutRef.current = null;
+            if (
+              layoutRunIdRef.current !== runId ||
+              graphRef.current !== graph ||
+              !isRendererActive()
+            ) {
+              return;
+            }
+
+            noverlap.assign(graph, policy.settings);
+            refreshSigma('noverlap:deferred');
+          }, 0);
+        }
       }
 
       setIsLayoutRunning(false);
@@ -665,6 +687,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       }
       if (layoutMonitorRef.current) {
         clearInterval(layoutMonitorRef.current);
+      }
+      if (noverlapTimeoutRef.current) {
+        clearTimeout(noverlapTimeoutRef.current);
       }
       layoutRef.current?.kill();
       sigma.kill();

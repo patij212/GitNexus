@@ -30,8 +30,14 @@ import {
   startGraphPerfMeasure,
   type GraphPerfObserver,
 } from '../lib/graph-perf';
+import { shouldPublishThreeLayoutPositions } from '../lib/graph-layout-policy';
 import { getRelationCurveMultiplier, hashToUnit } from '../lib/graph-render-model';
 import type { NodeAnimation } from './useAppState';
+
+export {
+  THREE_LAYOUT_POSITION_PUBLISH_INTERVAL_MS,
+  shouldPublishThreeLayoutPositions,
+} from '../lib/graph-layout-policy';
 
 export type ThreeGraphCameraMode = 'arcball' | 'firstPerson';
 
@@ -293,6 +299,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const sceneDirtyRef = useRef<SceneDirtyFlags>(createSceneDirtyFlags(true));
   const lastCameraQuaternionRef = useRef(new THREE.Quaternion());
   const layoutRunningRef = useRef(false);
+  const lastLayoutPositionPublishRef = useRef<number | null>(null);
   const lastTimeRef = useRef(performance.now());
 
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
@@ -337,6 +344,26 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       edgePositions: true,
     });
   }, [markSceneDirty]);
+
+  const publishLayoutPositions = useCallback(
+    (label: string, options: { force?: boolean; nowMs?: number } = {}) => {
+      const nowMs = options.nowMs ?? performance.now();
+      const shouldPublish =
+        options.force === true ||
+        shouldPublishThreeLayoutPositions(nowMs, lastLayoutPositionPublishRef.current);
+
+      recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.threeSceneUpdate, {
+        label: `layout-publish:${shouldPublish ? 'published' : 'throttled'}:${label}`,
+      });
+
+      if (!shouldPublish) return false;
+
+      lastLayoutPositionPublishRef.current = nowMs;
+      markGraphPositionsDirty();
+      return true;
+    },
+    [markGraphPositionsDirty],
+  );
 
   const setSelectedNode = useCallback(
     (nodeId: string | null) => {
@@ -752,14 +779,15 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const stopLayout = useCallback(() => {
     simulationRef.current?.stop();
     layoutRunningRef.current = false;
-    markGraphPositionsDirty();
+    publishLayoutPositions('stop', { force: true });
     setIsLayoutRunning(false);
-  }, [markGraphPositionsDirty]);
+  }, [publishLayoutPositions]);
 
   const startLayout = useCallback(() => {
     if (nodesRef.current.length === 0 || !isRendererActive()) return;
 
     simulationRef.current?.stop();
+    lastLayoutPositionPublishRef.current = null;
 
     const nodeCount = nodesRef.current.length;
     const linkDistance = nodeCount > 5000 ? 55 : nodeCount > 1500 ? 70 : 95;
@@ -800,15 +828,15 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       .velocityDecay(0.32)
       .on('end', () => {
         layoutRunningRef.current = false;
-        markGraphPositionsDirty();
+        publishLayoutPositions('end', { force: true });
         setIsLayoutRunning(false);
       });
 
     simulationRef.current = simulation;
     layoutRunningRef.current = true;
-    markGraphPositionsDirty();
+    publishLayoutPositions('start', { force: true });
     setIsLayoutRunning(true);
-  }, [isRendererActive, markGraphPositionsDirty]);
+  }, [isRendererActive, publishLayoutPositions]);
 
   const disposeSceneObjects = useCallback(() => {
     const scene = sceneRef.current;
@@ -1572,7 +1600,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       }
 
       if (layoutRunningRef.current) {
-        markGraphPositionsDirty();
+        publishLayoutPositions('frame', { nowMs: time });
       }
       updateSceneObjects('frame');
       renderer.render(scene, camera);
@@ -1629,8 +1657,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     };
   }, [
     disposeSceneObjects,
-    markGraphPositionsDirty,
     markSceneDirty,
+    publishLayoutPositions,
     setSelectedNode,
     updateSceneObjects,
   ]);

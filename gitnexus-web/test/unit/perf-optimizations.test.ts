@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import {
+  THREE_LAYOUT_POSITION_PUBLISH_INTERVAL_MS,
+  getNoverlapPolicy,
+  getNoverlapSettings,
+  shouldPublishThreeLayoutPositions,
+} from '../../src/lib/graph-layout-policy';
 
 // ==========================================================================
 // PR4 Performance Optimizations — verify behavior preserved after changes
@@ -70,5 +76,42 @@ describe('Set.has — O(1) highlight matching', () => {
   it('is case-sensitive', () => {
     const idSet = new Set(['Function:a.ts:Foo']);
     expect(idSet.has('Function:a.ts:foo')).toBe(false);
+  });
+});
+
+describe('layout pressure caps', () => {
+  it('throttles repeated 3D layout position publishes to the configured cadence', () => {
+    expect(shouldPublishThreeLayoutPositions(1000, null)).toBe(true);
+    expect(shouldPublishThreeLayoutPositions(1020, 1000)).toBe(false);
+    expect(
+      shouldPublishThreeLayoutPositions(1000 + THREE_LAYOUT_POSITION_PUBLISH_INTERVAL_MS, 1000),
+    ).toBe(true);
+  });
+
+  it('keeps small and medium noverlap quality synchronous', () => {
+    expect(getNoverlapPolicy(250)).toEqual({
+      mode: 'sync',
+      label: 'sync:standard:80',
+      settings: getNoverlapSettings(250),
+    });
+    expect(getNoverlapPolicy(3000)).toEqual({
+      mode: 'sync',
+      label: 'sync:standard:55',
+      settings: getNoverlapSettings(3000),
+    });
+  });
+
+  it('defers or skips expensive noverlap passes for large graphs', () => {
+    expect(getNoverlapPolicy(7500)).toEqual({
+      mode: 'defer',
+      label: 'defer:large:28',
+      settings: getNoverlapSettings(7500),
+    });
+    expect(getNoverlapPolicy(12000)).toEqual({
+      mode: 'defer',
+      label: 'defer:large:18',
+      settings: getNoverlapSettings(12000),
+    });
+    expect(getNoverlapPolicy(16000)).toEqual({ mode: 'skip', label: 'skip:huge' });
   });
 });
