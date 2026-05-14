@@ -96,6 +96,18 @@ interface Graph3DLink extends SimulationLinkDatum<Graph3DNode> {
   curveMultiplier: number;
 }
 
+type EdgeRenderEntry = {
+  link: Graph3DLink;
+  source: Graph3DNode;
+  target: Graph3DNode;
+  base: number;
+  span: number;
+  curveVectorX: number;
+  curveVectorY: number;
+  curveVectorZ: number;
+  curveMultiplier: number;
+};
+
 type NodeVisual = {
   visible: boolean;
   color: string;
@@ -103,6 +115,12 @@ type NodeVisual = {
   haloScale: number;
   shellScale: number;
   shellColor: string;
+};
+
+type ColorComponents = {
+  r: number;
+  g: number;
+  b: number;
 };
 
 type HoverPickRequest = {
@@ -151,6 +169,11 @@ const SCRATCH_BEND = new THREE.Vector3();
 const SCRATCH_CONTROL = new THREE.Vector3();
 const SCRATCH_POINT_A = new THREE.Vector3();
 const SCRATCH_POINT_B = new THREE.Vector3();
+const SCRATCH_MATRIX = new THREE.Matrix4();
+const SCRATCH_POSITION = new THREE.Vector3();
+const SCRATCH_SCALE = new THREE.Vector3();
+const SCRATCH_COLOR = new THREE.Color();
+const IDENTITY_QUATERNION = new THREE.Quaternion();
 
 const createRadialTexture = (stops: Array<[number, string]>): THREE.CanvasTexture => {
   const size = 96;
@@ -231,8 +254,40 @@ const getNodePosition = (node: Graph3DNode): THREE.Vector3 => {
   return new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0);
 };
 
-const resolveLinkNode = (value: string | number | Graph3DNode): Graph3DNode | null => {
-  return typeof value === 'object' && value !== null && 'id' in value ? value : null;
+const getCachedColorComponents = (
+  cache: Map<string, ColorComponents>,
+  colorValue: string,
+): ColorComponents => {
+  let cached = cache.get(colorValue);
+  if (!cached) {
+    SCRATCH_COLOR.set(colorValue);
+    cached = { r: SCRATCH_COLOR.r, g: SCRATCH_COLOR.g, b: SCRATCH_COLOR.b };
+    cache.set(colorValue, cached);
+  }
+  return cached;
+};
+
+const setInstancedColorFromCache = (
+  mesh: THREE.InstancedMesh,
+  index: number,
+  cache: Map<string, ColorComponents>,
+  colorValue: string,
+): void => {
+  const color = getCachedColorComponents(cache, colorValue);
+  SCRATCH_COLOR.setRGB(color.r, color.g, color.b);
+  mesh.setColorAt(index, SCRATCH_COLOR);
+};
+
+const isEdgeRenderEntryVisible = (
+  entry: EdgeRenderEntry,
+  visibleTypes: Set<EdgeType> | null,
+): boolean => {
+  const relationType = entry.link.attributes.relationType;
+  const hiddenByType = relationType
+    ? Boolean(visibleTypes && !visibleTypes.has(relationType as EdgeType))
+    : false;
+
+  return !entry.source.attributes.hidden && !entry.target.attributes.hidden && !hiddenByType;
 };
 
 const getCameraTarget = (
@@ -277,13 +332,14 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const nodesRef = useRef<Graph3DNode[]>([]);
   const nodeIndexRef = useRef<Map<string, Graph3DNode>>(new Map());
   const linksRef = useRef<Graph3DLink[]>([]);
+  const edgeRenderEntriesRef = useRef<EdgeRenderEntry[]>([]);
   const simulationRef = useRef<Simulation<Graph3DNode, Graph3DLink> | null>(null);
   const selectedNodeRef = useRef<string | null>(null);
   const hoveredNodeRef = useRef<string | null>(null);
   const highlightedRef = useRef<Set<string>>(new Set());
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
-  const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const visibleEdgeTypeSetRef = useRef<Set<EdgeType> | null>(null);
   const cameraModeRef = useRef<ThreeGraphCameraMode>('arcball');
   const optionsRef = useRef(options);
   const isActiveRef = useRef(options.isActive ?? true);
@@ -296,6 +352,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const sparkPositionsRef = useRef<Float32Array | null>(null);
   const sparkColorsRef = useRef<Float32Array | null>(null);
   const nodeVisualsRef = useRef<NodeVisual[]>([]);
+  const colorComponentsCacheRef = useRef<Map<string, ColorComponents>>(new Map());
   const sceneDirtyRef = useRef<SceneDirtyFlags>(createSceneDirtyFlags(true));
   const lastCameraQuaternionRef = useRef(new THREE.Quaternion());
   const layoutRunningRef = useRef(false);
@@ -491,11 +548,11 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       const nodeVisuals = nodeVisualsRef.current;
       const sparkPositions = sparkPositionsRef.current;
       const sparkColors = sparkColorsRef.current;
+      const colorCache = colorComponentsCacheRef.current;
 
       if (dirty.nodeVisuals) {
         const finishNodeVisuals = finishSceneUpdateCategory('node-visuals');
         const now = Date.now();
-        const color = new THREE.Color();
         nodeVisuals.length = nodes.length;
 
         for (let i = 0; i < nodes.length; i += 1) {
@@ -503,12 +560,9 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
           const visual = getNodeVisual(node.id, node.attributes, now);
           nodeVisuals[i] = visual;
 
-          color.set(visual.color);
-          nodeMesh.setColorAt(i, color);
-          color.set(brightenColor(visual.color, 1.45));
-          haloMesh.setColorAt(i, color);
-          color.set(visual.shellColor);
-          shellMesh.setColorAt(i, color);
+          setInstancedColorFromCache(nodeMesh, i, colorCache, visual.color);
+          setInstancedColorFromCache(haloMesh, i, colorCache, brightenColor(visual.color, 1.45));
+          setInstancedColorFromCache(shellMesh, i, colorCache, visual.shellColor);
         }
 
         if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
@@ -521,10 +575,10 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (dirty.nodeTransforms) {
         const finishNodeTransforms = finishSceneUpdateCategory('node-transforms');
         const now = Date.now();
-        const matrix = new THREE.Matrix4();
-        const position = new THREE.Vector3();
-        const scale = new THREE.Vector3();
-        const billboardQuaternion = cameraRef.current?.quaternion || new THREE.Quaternion();
+        const matrix = SCRATCH_MATRIX;
+        const position = SCRATCH_POSITION;
+        const scale = SCRATCH_SCALE;
+        const billboardQuaternion = cameraRef.current?.quaternion || IDENTITY_QUATERNION;
 
         for (let i = 0; i < nodes.length; i += 1) {
           const node = nodes[i];
@@ -574,15 +628,20 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (dirty.sparkVisuals && sparkColors) {
         const finishSparkVisuals = finishSceneUpdateCategory('spark-visuals');
         const now = Date.now();
-        const color = new THREE.Color();
         for (let i = 0; i < nodes.length; i += 1) {
           const node = nodes[i];
           const visual = nodeVisuals[i] || getNodeVisual(node.id, node.attributes, now);
           const sparkBase = i * 3;
-          color.set(visual.visible ? mixColor(visual.color, '#ffffff', 0.18) : '#000000');
-          sparkColors[sparkBase] = color.r;
-          sparkColors[sparkBase + 1] = color.g;
-          sparkColors[sparkBase + 2] = color.b;
+          if (visual.visible) {
+            const color = getCachedColorComponents(colorCache, visual.color);
+            sparkColors[sparkBase] = color.r + (1 - color.r) * 0.18;
+            sparkColors[sparkBase + 1] = color.g + (1 - color.g) * 0.18;
+            sparkColors[sparkBase + 2] = color.b + (1 - color.b) * 0.18;
+          } else {
+            sparkColors[sparkBase] = 0;
+            sparkColors[sparkBase + 1] = 0;
+            sparkColors[sparkBase + 2] = 0;
+          }
         }
 
         const sparkColorAttr = sparkPoints.geometry.getAttribute('color') as THREE.BufferAttribute;
@@ -598,35 +657,18 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         return;
       }
 
-      const visibleTypes = visibleEdgeTypesRef.current;
-      const resolveEdgeVisibility = (link: Graph3DLink) => {
-        const source = resolveLinkNode(link.source);
-        const target = resolveLinkNode(link.target);
-        const sourceAttrs = source ? source.attributes : null;
-        const targetAttrs = target ? target.attributes : null;
-        const hiddenByType =
-          visibleTypes && link.attributes.relationType
-            ? !visibleTypes.includes(link.attributes.relationType as EdgeType)
-            : false;
-        const isVisible =
-          Boolean(source && target && sourceAttrs && targetAttrs) &&
-          !sourceAttrs?.hidden &&
-          !targetAttrs?.hidden &&
-          !hiddenByType;
-
-        return { isVisible, source, target };
-      };
+      const visibleTypes = visibleEdgeTypeSetRef.current;
+      const edgeRenderEntries = edgeRenderEntriesRef.current;
 
       if (dirty.edgePositions && positions) {
         const finishEdgePositions = finishSceneUpdateCategory('edge-positions');
-        for (let i = 0; i < linksRef.current.length; i += 1) {
-          const link = linksRef.current[i];
-          const { isVisible, source, target } = resolveEdgeVisibility(link);
-          const base = i * EDGE_CURVE_SEGMENTS * 6;
-          const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
+        for (let i = 0; i < edgeRenderEntries.length; i += 1) {
+          const entry = edgeRenderEntries[i];
+          const source = entry.source;
+          const target = entry.target;
 
-          if (!isVisible || !source || !target) {
-            positions.fill(0, base, base + edgeSpan);
+          if (!isEdgeRenderEntryVisible(entry, visibleTypes)) {
+            positions.fill(0, entry.base, entry.base + entry.span);
             continue;
           }
 
@@ -637,14 +679,14 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
           const distance = Math.max(1, SCRATCH_DIRECTION.length());
           SCRATCH_DIRECTION.divideScalar(distance);
 
-          SCRATCH_BEND.copy(link.curveVector);
+          SCRATCH_BEND.set(entry.curveVectorX, entry.curveVectorY, entry.curveVectorZ);
           SCRATCH_BEND.addScaledVector(SCRATCH_DIRECTION, -SCRATCH_BEND.dot(SCRATCH_DIRECTION));
           if (SCRATCH_BEND.lengthSq() < 0.0001) {
             SCRATCH_BEND.set(0, 1, 0).addScaledVector(SCRATCH_DIRECTION, -SCRATCH_DIRECTION.y);
           }
           SCRATCH_BEND.normalize();
 
-          const arcHeight = Math.min(125, Math.max(10, distance * link.curveMultiplier));
+          const arcHeight = Math.min(125, Math.max(10, distance * entry.curveMultiplier));
           SCRATCH_CONTROL.copy(SCRATCH_MID).addScaledVector(SCRATCH_BEND, arcHeight);
 
           for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
@@ -665,7 +707,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
               endT,
             );
 
-            const segmentBase = base + segment * 6;
+            const segmentBase = entry.base + segment * 6;
             positions[segmentBase] = SCRATCH_POINT_A.x;
             positions[segmentBase + 1] = SCRATCH_POINT_A.y;
             positions[segmentBase + 2] = SCRATCH_POINT_A.z;
@@ -683,20 +725,16 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
       if (dirty.edgeVisuals && colors) {
         const finishEdgeVisuals = finishSceneUpdateCategory('edge-visuals');
-        const color = new THREE.Color();
-        const edgeHighlightColor = new THREE.Color();
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
         const currentSelected = selectedNodeRef.current;
 
-        for (let i = 0; i < linksRef.current.length; i += 1) {
-          const link = linksRef.current[i];
-          const { isVisible } = resolveEdgeVisibility(link);
-          const base = i * EDGE_CURVE_SEGMENTS * 6;
-          const edgeSpan = EDGE_CURVE_SEGMENTS * 6;
+        for (let i = 0; i < edgeRenderEntries.length; i += 1) {
+          const entry = edgeRenderEntries[i];
+          const link = entry.link;
 
-          if (!isVisible) {
-            colors.fill(0, base, base + edgeSpan);
+          if (!isEdgeRenderEntryVisible(entry, visibleTypes)) {
+            colors.fill(0, entry.base, entry.base + entry.span);
             continue;
           }
 
@@ -710,19 +748,24 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
             blastRadiusNodeIds: blastRadius,
           });
 
-          color.set(edgeVisual.color);
-          edgeHighlightColor.copy(color).lerp(WHITE_COLOR, 0.34);
+          const color = getCachedColorComponents(colorCache, edgeVisual.color);
+          const highlightR = color.r + (WHITE_COLOR.r - color.r) * 0.34;
+          const highlightG = color.g + (WHITE_COLOR.g - color.g) * 0.34;
+          const highlightB = color.b + (WHITE_COLOR.b - color.b) * 0.34;
 
           for (let segment = 0; segment < EDGE_CURVE_SEGMENTS; segment += 1) {
-            const segmentBase = base + segment * 6;
+            const segmentBase = entry.base + segment * 6;
             const distanceFromMiddle = Math.abs((segment + 0.5) / EDGE_CURVE_SEGMENTS - 0.5) * 2;
-            const segmentColor = distanceFromMiddle < 0.42 ? edgeHighlightColor : color;
-            colors[segmentBase] = segmentColor.r;
-            colors[segmentBase + 1] = segmentColor.g;
-            colors[segmentBase + 2] = segmentColor.b;
-            colors[segmentBase + 3] = segmentColor.r;
-            colors[segmentBase + 4] = segmentColor.g;
-            colors[segmentBase + 5] = segmentColor.b;
+            const useHighlight = distanceFromMiddle < 0.42;
+            const r = useHighlight ? highlightR : color.r;
+            const g = useHighlight ? highlightG : color.g;
+            const b = useHighlight ? highlightB : color.b;
+            colors[segmentBase] = r;
+            colors[segmentBase + 1] = g;
+            colors[segmentBase + 2] = b;
+            colors[segmentBase + 3] = r;
+            colors[segmentBase + 4] = g;
+            colors[segmentBase + 5] = b;
           }
         }
 
@@ -840,6 +883,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
   const disposeSceneObjects = useCallback(() => {
     const scene = sceneRef.current;
+    colorComponentsCacheRef.current.clear();
 
     if (nodeMeshRef.current) {
       scene?.remove(nodeMeshRef.current);
@@ -879,6 +923,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       edgeLinesRef.current = null;
       edgePositionsRef.current = null;
       edgeColorsRef.current = null;
+      edgeRenderEntriesRef.current = [];
     }
   }, []);
 
@@ -961,6 +1006,30 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       nodesRef.current = nodes;
       nodeIndexRef.current = nodeIndex;
       linksRef.current = links;
+      edgeRenderEntriesRef.current = links.map((link, index) => {
+        const source = nodeIndex.get(link.sourceId);
+        const target = nodeIndex.get(link.targetId);
+        if (!source || !target) {
+          throw new Error(`Three graph edge ${link.id} references a missing node`);
+        }
+        const base = index * EDGE_CURVE_SEGMENTS * 6;
+        return {
+          link,
+          source,
+          target,
+          base,
+          span: EDGE_CURVE_SEGMENTS * 6,
+          curveVectorX: link.curveVector.x,
+          curveVectorY: link.curveVector.y,
+          curveVectorZ: link.curveVector.z,
+          curveMultiplier: link.curveMultiplier,
+        };
+      });
+      colorComponentsCacheRef.current.clear();
+      recordGraphPerf(optionsRef.current.perfObserver, GRAPH_PERF_METRICS.threeSceneUpdate, {
+        label: 'setGraph:edge-topology',
+        count: links.length,
+      });
 
       const nodeSegments = getNodeGeometrySegments(nodes.length);
       const nodeGeometry = new THREE.CircleGeometry(1, nodeSegments);
@@ -1192,7 +1261,9 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     highlightedRef.current = options.highlightedNodeIds || new Set();
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
-    visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
+    visibleEdgeTypeSetRef.current = options.visibleEdgeTypes
+      ? new Set(options.visibleEdgeTypes)
+      : null;
     markGraphVisualsDirty(true);
     if (isRendererActive()) {
       updateSceneObjects('visual-options');
