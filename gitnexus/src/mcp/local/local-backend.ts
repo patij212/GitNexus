@@ -1261,6 +1261,18 @@ export class LocalBackend {
    * weighted-average cohesion, filter out tiny clusters (<5 symbols).
    * Raw communities stay intact in LadybugDB for Cypher queries.
    */
+  // LadybugDB returns `BIGINT` columns (such as the Leiden cluster
+  // `symbolCount`) as JS `BigInt`. The aggregation below mixes those values
+  // with regular numbers (`cohesion * symbols`, `weightedCohesion / totalSymbols`),
+  // which throws a `TypeError` at runtime under strict bigint semantics or, with
+  // the `|| 0` fallback, silently coerces NaN/string-concat results into the
+  // weighted average. Coerce once at the boundary so the rest of the function
+  // can stay number-only.
+  private static toFiniteNumber(value: unknown): number {
+    const n = typeof value === 'bigint' ? Number(value) : Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   private aggregateClusters(clusters: any[]): any[] {
     const groups = new Map<
       string,
@@ -1269,8 +1281,8 @@ export class LocalBackend {
 
     for (const c of clusters) {
       const label = c.heuristicLabel || c.label || 'Unknown';
-      const symbols = c.symbolCount || 0;
-      const cohesion = c.cohesion || 0;
+      const symbols = LocalBackend.toFiniteNumber(c.symbolCount);
+      const cohesion = LocalBackend.toFiniteNumber(c.cohesion);
       const existing = groups.get(label);
 
       if (!existing) {
@@ -1284,7 +1296,7 @@ export class LocalBackend {
         existing.ids.push(c.id);
         existing.totalSymbols += symbols;
         existing.weightedCohesion += cohesion * symbols;
-        if (symbols > (existing.largest.symbolCount || 0)) {
+        if (symbols > LocalBackend.toFiniteNumber(existing.largest.symbolCount)) {
           existing.largest = c;
         }
       }
