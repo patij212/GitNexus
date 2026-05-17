@@ -6,6 +6,9 @@ import { NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
 export interface SigmaNodeAttributes {
   x: number;
   y: number;
+  // Optional pre-seeded depth so the 3D renderer can carry a layout position
+  // between sessions. Sigma ignores it.
+  z?: number;
   size: number;
   color: string;
   label: string;
