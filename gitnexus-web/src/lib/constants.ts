@@ -1,5 +1,34 @@
 import type { NodeLabel } from 'gitnexus-shared';
 
+// Shared neutral surface colors used by the graph background, dim mixes, and
+// fallback states. Centralising these lets visual helpers compose them without
+// each call site re-deriving the same hex literals.
+export const GRAPH_SURFACE_COLORS = {
+  background: '#06060a',
+  backgroundSoft: '#0a0a10',
+  dimMix: '#12121c',
+  dimEdge: '#151827',
+  defaultNode: '#6b7280',
+  defaultEdge: '#2a2a3a',
+  fallbackNode: '#9ca3af',
+  fallbackEdge: '#4a4a5a',
+  tooltipBackground: '#12121c',
+  tooltipText: '#f5f5f7',
+} as const;
+
+// Highlight palette shared between node and edge resolvers so spotlight,
+// selection, blast-radius, and animated states stay visually consistent.
+export const GRAPH_HIGHLIGHT_COLORS = {
+  query: '#06b6d4',
+  querySoft: '#67e8f9',
+  blast: '#ef4444',
+  blastSoft: '#fca5a5',
+  blastPulse: '#f87171',
+  change: '#a855f7',
+  changePulse: '#c084fc',
+  changeSoft: '#d8b4fe',
+} as const;
+
 // Node colors by type - slightly muted for less visual noise
 export const NODE_COLORS: Record<NodeLabel, string> = {
   Project: '#a855f7', // Purple - prominent

@@ -8,51 +8,7 @@ import EdgeCurveProgram from '@sigma/edge-curve';
 import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { NodeAnimation } from './useAppState';
 import type { EdgeType } from '../lib/constants';
-// Helper: Parse hex color to RGB
-const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16),
-      }
-    : { r: 100, g: 100, b: 100 };
-};
-
-// Helper: RGB to hex
-const rgbToHex = (r: number, g: number, b: number): string => {
-  return (
-    '#' +
-    [r, g, b]
-      .map((x) => {
-        const hex = Math.max(0, Math.min(255, Math.round(x))).toString(16);
-        return hex.length === 1 ? '0' + hex : hex;
-      })
-      .join('')
-  );
-};
-
-// Dim a color by mixing with dark background (keeps color hint)
-const dimColor = (hex: string, amount: number): string => {
-  const rgb = hexToRgb(hex);
-  const darkBg = { r: 18, g: 18, b: 28 }; // #12121c - dark background
-  return rgbToHex(
-    darkBg.r + (rgb.r - darkBg.r) * amount,
-    darkBg.g + (rgb.g - darkBg.g) * amount,
-    darkBg.b + (rgb.b - darkBg.b) * amount,
-  );
-};
-
-// Brighten a color (increase luminosity)
-const brightenColor = (hex: string, factor: number): string => {
-  const rgb = hexToRgb(hex);
-  return rgbToHex(
-    rgb.r + ((255 - rgb.r) * (factor - 1)) / factor,
-    rgb.g + ((255 - rgb.g) * (factor - 1)) / factor,
-    rgb.b + ((255 - rgb.b) * (factor - 1)) / factor,
-  );
-};
+import { brightenColor, dimColor } from '../lib/graph-visual-state';
 
 interface UseSigmaOptions {
   onNodeClick?: (nodeId: string) => void;
