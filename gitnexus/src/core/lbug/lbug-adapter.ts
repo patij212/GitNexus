@@ -150,6 +150,8 @@ let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let currentDbReadOnly = false;
+type DbFileStamp = { size: number; mtimeMs: number; ctimeMs: number };
+let currentDbFileStamp: DbFileStamp | null = null;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
@@ -259,6 +261,18 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
+export const readDbFileStamp = async (dbPath: string): Promise<DbFileStamp | null> => {
+  try {
+    const stat = await fs.stat(dbPath);
+    return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+  } catch {
+    return null;
+  }
+};
+
+export const isSameDbFileStamp = (a: DbFileStamp | null, b: DbFileStamp | null): boolean =>
+  !!a && !!b && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+
 export const initLbug = async (dbPath: string) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath));
 };
@@ -301,6 +315,7 @@ export const withLbugDb = async <T>(
           await safeClose();
           currentDbPath = null;
           currentDbReadOnly = false;
+          currentDbFileStamp = null;
           ftsLoaded = false;
           vectorExtensionLoaded = false;
           ensuredFTSIndexes.clear();
@@ -322,6 +337,7 @@ export const withLbugDb = async <T>(
               await safeClose();
               currentDbPath = null;
               currentDbReadOnly = false;
+              currentDbFileStamp = null;
               ftsLoaded = false;
               vectorExtensionLoaded = false;
               ensuredFTSIndexes.clear();
@@ -341,6 +357,7 @@ export const withLbugDb = async <T>(
         await safeClose();
         currentDbPath = null;
         currentDbReadOnly = false;
+        currentDbFileStamp = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
         ensuredFTSIndexes.clear();
@@ -357,7 +374,13 @@ export const withLbugDb = async <T>(
 const ensureLbugInitialized = async (dbPath: string, options: LbugSessionOptions = {}) => {
   const wantsReadOnly = options.readOnly === true;
   if (conn && currentDbPath === dbPath && (!currentDbReadOnly || wantsReadOnly)) {
-    return { db, conn };
+    // External analyze/watch processes can rewrite the same .gitnexus/lbug
+    // file while this server keeps a singleton connection open. If we don't
+    // detect that file change, /api/graph serves stale data indefinitely.
+    const latestStamp = await readDbFileStamp(dbPath);
+    if (isSameDbFileStamp(currentDbFileStamp, latestStamp)) {
+      return { db, conn };
+    }
   }
   await doInitLbug(dbPath, options);
   return { db, conn };
@@ -370,6 +393,7 @@ const doInitLbug = async (dbPath: string, options: LbugSessionOptions = {}) => {
     await safeClose();
     currentDbPath = null;
     currentDbReadOnly = false;
+    currentDbFileStamp = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
     ensuredFTSIndexes.clear();
@@ -432,6 +456,7 @@ const doInitLbug = async (dbPath: string, options: LbugSessionOptions = {}) => {
 
   currentDbPath = dbPath;
   currentDbReadOnly = readOnly;
+  currentDbFileStamp = await readDbFileStamp(dbPath);
   return { db, conn };
 };
 
@@ -1343,6 +1368,7 @@ export const closeLbug = async (): Promise<void> => {
     await safeClose();
     currentDbPath = null;
     currentDbReadOnly = false;
+    currentDbFileStamp = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
     ensuredFTSIndexes.clear();

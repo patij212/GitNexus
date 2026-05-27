@@ -60,6 +60,7 @@ import {
 } from '../lib/constants';
 import { copyEdgeSelection, edgeSelectionEquals } from '../lib/edge-selection';
 import type { GraphPerfObserver } from '../lib/graph-perf';
+import { filterKnowledgeGraphForRendering } from '../lib/folder-render-filter';
 import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
@@ -314,6 +315,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       clearBlastRadius,
       animatedNodes,
       currentToolCalls,
+      excludedFolderPaths,
     } = useAppState();
     const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
     const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>('2d');
@@ -385,19 +387,6 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const activeAIToolNodeIds = isAIHighlightsEnabled
       ? aiToolHighlightedNodeIds
       : disabledAINodeIds;
-    const rendererHighlightedNodeIds = useMemo(() => {
-      if (!isAIHighlightsEnabled) return highlightedNodeIds;
-      const next = new Set(highlightedNodeIds);
-      for (const id of aiCitationHighlightedNodeIds) next.add(id);
-      for (const id of aiToolHighlightedNodeIds) next.add(id);
-      return next;
-    }, [
-      highlightedNodeIds,
-      aiCitationHighlightedNodeIds,
-      aiToolHighlightedNodeIds,
-      isAIHighlightsEnabled,
-    ]);
-
     // Blast radius nodes (only when AI highlights enabled)
     const effectiveBlastRadiusNodeIds = useMemo(() => {
       if (!isAIHighlightsEnabled) return new Set<string>();
@@ -415,10 +404,20 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       return next;
     }, [animatedNodes, graphChangeAnimations, isAIHighlightsEnabled]);
 
+    const renderGraph = useMemo(() => {
+      if (!graph) return null;
+      return filterKnowledgeGraphForRendering(graph, excludedFolderPaths);
+    }, [excludedFolderPaths, graph]);
+
     const nodeById = useMemo(() => {
       if (!graph) return new Map<string, GraphNode>();
       return new Map(graph.nodes.map((n) => [n.id, n]));
     }, [graph]);
+    const renderNodeById = useMemo(() => {
+      if (!renderGraph) return new Map<string, GraphNode>();
+      return new Map(renderGraph.nodes.map((n) => [n.id, n]));
+    }, [renderGraph]);
+    const renderNodeIds = useMemo(() => new Set(renderNodeById.keys()), [renderNodeById]);
     const agentLensFocusState = useMemo(
       () =>
         resolveAgentLensFocus({
@@ -671,7 +670,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onNodeClick: handleNodeClick,
       onNodeHover: handleNodeHover,
       onStageClick: handleStageClick,
-      highlightedNodeIds: rendererHighlightedNodeIds,
+      highlightedNodeIds: effectiveHighlightedNodeIds,
       blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
       animatedNodes: effectiveAnimatedNodes,
       visibleEdgeTypes: activeVisibleEdgeTypes,
@@ -698,7 +697,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onNodeClick: handleNodeClick,
       onNodeHover: handleNodeHover,
       onStageClick: handleStageClick,
-      highlightedNodeIds: rendererHighlightedNodeIds,
+      highlightedNodeIds: effectiveHighlightedNodeIds,
       blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
       animatedNodes: effectiveAnimatedNodes,
       visibleEdgeTypes: activeVisibleEdgeTypes,
@@ -721,6 +720,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         const node = nodeById.get(nodeId);
         if (!node) return false;
+        if (shouldFocusCamera && !renderNodeIds.has(nodeId)) return false;
 
         if (shouldFocusCamera) {
           setSelectedNode(node);
@@ -731,7 +731,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         setSelectedNode(node);
         return true;
       },
-      [focusNode, graph, nodeById, setSelectedNode],
+      [focusNode, graph, nodeById, renderNodeIds, setSelectedNode],
     );
 
     const handleToggleAIHighlights = useCallback(() => {
@@ -768,15 +768,28 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       [openCodePanel, selectNodeInGraph],
     );
 
+    useEffect(() => {
+      if (!appSelectedNode || renderNodeIds.has(appSelectedNode.id)) return;
+      setSelectedNode(null);
+      setSigmaSelectedNode(null);
+      setThreeSelectedNode(null);
+    }, [
+      appSelectedNode,
+      renderNodeIds,
+      setSelectedNode,
+      setSigmaSelectedNode,
+      setThreeSelectedNode,
+    ]);
+
     const buildRenderGraphForMode = useCallback(
       (mode: GraphViewMode, preservePositions: boolean) => {
-        if (!graph) return null;
+        if (!renderGraph) return null;
 
         const communityMemberships = new Map<string, number>();
-        graph.relationships.forEach((rel) => {
+        renderGraph.relationships.forEach((rel) => {
           if (rel.type !== 'MEMBER_OF') return;
 
-          const communityNode = nodeById.get(rel.targetId);
+          const communityNode = renderNodeById.get(rel.targetId);
           if (communityNode && communityNode.label === 'Community') {
             const numericPart = rel.targetId.replace('comm_', '');
             const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
@@ -784,7 +797,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           }
         });
 
-        const targetGraph = knowledgeGraphToGraphology(graph, communityMemberships, {
+        const targetGraph = knowledgeGraphToGraphology(renderGraph, communityMemberships, {
           colorMode: graphColorMode,
           impactNodeIds: effectiveBlastRadiusNodeIds,
           agentFocusNodeIds: effectiveHighlightedNodeIds,
@@ -827,16 +840,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         activeAIToolNodeIds,
         effectiveBlastRadiusNodeIds,
         effectiveHighlightedNodeIds,
-        graph,
         graphColorMode,
-        nodeById,
         perfObserver,
+        renderGraph,
+        renderNodeById,
       ],
     );
 
     const syncRendererGraph = useCallback(
       (mode: GraphViewMode, visualOnlyUpdate = false) => {
-        if (!graph) return false;
+        if (!renderGraph) return false;
 
         const previousTargetGraph =
           mode === '2d' ? renderGraph2DRef.current : renderGraph3DRef.current;
@@ -866,17 +879,17 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         return true;
       },
-      [buildRenderGraphForMode, graph, setSigmaGraph, setThreeGraph],
+      [buildRenderGraphForMode, renderGraph, setSigmaGraph, setThreeGraph],
     );
 
     // Update only the active render graph when KnowledgeGraph or visual options change.
     useEffect(() => {
-      if (!graph) return;
+      if (!renderGraph) return;
 
-      const visualOnlyUpdate = previousKnowledgeGraphRef.current === graph;
+      const visualOnlyUpdate = previousKnowledgeGraphRef.current === renderGraph;
       const graphDiff =
         previousKnowledgeGraphRef.current && !visualOnlyUpdate
-          ? diffKnowledgeGraphs(previousKnowledgeGraphRef.current, graph)
+          ? diffKnowledgeGraphs(previousKnowledgeGraphRef.current, renderGraph)
           : null;
 
       if (graphDiff?.hasChanges) {
@@ -904,13 +917,13 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
       const activeMode = graphViewModeRef.current;
       syncRendererGraph(activeMode, visualOnlyUpdate);
-      previousKnowledgeGraphRef.current = graph;
+      previousKnowledgeGraphRef.current = renderGraph;
       if (activeMode === '2d') {
         stopThreeLayout();
       } else {
         stopSigmaLayout();
       }
-    }, [graph, syncRendererGraph, stopSigmaLayout, stopThreeLayout]);
+    }, [renderGraph, syncRendererGraph, stopSigmaLayout, stopThreeLayout]);
 
     // Update node visibility when filters change
     useEffect(() => {
@@ -1037,7 +1050,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           agentLensFocusSource: agentLensFocusSourceRef.current,
           agentLensSignature: agentLensFocusSignatureRef.current,
           graphViewMode,
-          availableNodeIds: graph?.nodes.slice(0, 16).map((node) => node.id) ?? [],
+          availableNodeIds: renderGraph?.nodes.slice(0, 16).map((node) => node.id) ?? [],
           isAIHighlightsEnabled,
           impactNodeIds: agentLensFocusState.impactNodeIds,
           toolNodeIds: agentLensFocusState.toolNodeIds,
@@ -1069,6 +1082,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       graph,
       graphViewMode,
       isAIHighlightsEnabled,
+      renderGraph,
       selectNodeInGraph,
       sigmaRef,
     ]);

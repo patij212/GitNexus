@@ -2231,6 +2231,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
             // Capture stderr for crash diagnostics
             let stderrChunks = '';
+            let workerReportedTerminalResult = false;
             child.stderr?.on('data', (chunk: Buffer) => {
               stderrChunks += chunk.toString();
               if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
@@ -2264,11 +2265,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   },
                 });
               } else if (msg.type === 'complete') {
+                workerReportedTerminalResult = true;
                 releaseRepoLock(analyzeLockKey);
                 // Reinitialize backend BEFORE marking complete — ensures the new
                 // repo is queryable when the client receives the SSE complete event.
+                // Also drop any cached LadybugDB handle in this server process so
+                // the next graph request cannot reuse a stale connection to the
+                // pre-analysis database image.
                 backend
-                  .init()
+                  .releaseConnections()
+                  .catch(() => {})
+                  .then(() => closeLbug().catch(() => {}))
+                  .then(() => backend.init())
                   .then(() => {
                     jobManager.updateJob(job.id, {
                       status: 'complete',
@@ -2283,6 +2291,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     });
                   });
               } else if (msg.type === 'error') {
+                workerReportedTerminalResult = true;
                 releaseRepoLock(analyzeLockKey);
                 jobManager.addWarning(job.id, {
                   kind: 'indexing_error',
@@ -2310,6 +2319,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             child.on('exit', (code) => {
               const j = jobManager.getJob(job.id);
               if (!j || j.status === 'complete' || j.status === 'failed') return;
+
+              // The worker can report completion and then still exit with a
+              // Windows-native teardown code (e.g. 0xC0000005). Treat that
+              // as terminal-result-followed-by-exit, not as a retryable crash.
+              if (workerReportedTerminalResult) return;
 
               // Worker crashed — attempt retry if under the limit
               if (j.retryCount < MAX_WORKER_RETRIES) {

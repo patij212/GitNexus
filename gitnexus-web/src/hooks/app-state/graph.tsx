@@ -2,6 +2,7 @@ import { createContext, useContext, useCallback, useMemo, useState, ReactNode } 
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../core/graph/types';
 import { DEFAULT_VISIBLE_LABELS, DEFAULT_VISIBLE_EDGES, type EdgeType } from '../../lib/constants';
+import { normalizeFolderRenderPath } from '../../lib/folder-render-filter';
 
 interface GraphStateContextValue {
   graph: KnowledgeGraph | null;
@@ -18,6 +19,10 @@ interface GraphStateContextValue {
   setDepthFilter: (depth: number | null) => void;
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
+  excludedFolderPaths: Set<string>;
+  setExcludedFolderPaths: (paths: Set<string>) => void;
+  toggleFolderRenderExclusion: (path: string) => void;
+  clearFolderRenderExclusions: () => void;
 }
 
 const GraphStateContext = createContext<GraphStateContextValue | null>(null);
@@ -29,6 +34,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<EdgeType[]>(DEFAULT_VISIBLE_EDGES);
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
+  const [excludedFolderPaths, setExcludedFolderPaths] = useState<Set<string>>(new Set());
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels((prev) =>
@@ -40,6 +46,25 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
     setVisibleEdgeTypes((prev) =>
       prev.includes(edgeType) ? prev.filter((e) => e !== edgeType) : [...prev, edgeType],
     );
+  }, []);
+
+  const toggleFolderRenderExclusion = useCallback((path: string) => {
+    const normalizedPath = normalizeFolderRenderPath(path);
+    if (!normalizedPath) return;
+
+    setExcludedFolderPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(normalizedPath)) {
+        next.delete(normalizedPath);
+      } else {
+        next.add(normalizedPath);
+      }
+      return next;
+    });
+  }, []);
+
+  const clearFolderRenderExclusions = useCallback(() => {
+    setExcludedFolderPaths(new Set());
   }, []);
 
   const value = useMemo<GraphStateContextValue>(
@@ -58,8 +83,22 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       setDepthFilter,
       highlightedNodeIds,
       setHighlightedNodeIds,
+      excludedFolderPaths,
+      setExcludedFolderPaths,
+      toggleFolderRenderExclusion,
+      clearFolderRenderExclusions,
     }),
-    [graph, selectedNode, visibleLabels, visibleEdgeTypes, depthFilter, highlightedNodeIds],
+    [
+      graph,
+      selectedNode,
+      visibleLabels,
+      visibleEdgeTypes,
+      depthFilter,
+      highlightedNodeIds,
+      excludedFolderPaths,
+      toggleFolderRenderExclusion,
+      clearFolderRenderExclusions,
+    ],
   );
 
   return <GraphStateContext.Provider value={value}>{children}</GraphStateContext.Provider>;

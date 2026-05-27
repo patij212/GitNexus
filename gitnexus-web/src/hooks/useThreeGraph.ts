@@ -358,6 +358,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const layoutRunningRef = useRef(false);
   const lastLayoutPositionPublishRef = useRef<number | null>(null);
   const lastTimeRef = useRef(performance.now());
+  const renderPendingRef = useRef(false);
 
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
@@ -500,13 +501,19 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   );
 
   const updateSceneObjects = useCallback(
-    (label = 'unspecified') => {
-      if (!isRendererActive()) return;
+    (label = 'unspecified'): boolean => {
+      if (!isRendererActive()) return false;
 
       const dirty = sceneDirtyRef.current;
       if (animatedNodesRef.current.size > 0) {
-        dirty.animation = true;
-        dirty.nodeVisuals = true;
+        const checkNow = Date.now();
+        for (const anim of animatedNodesRef.current.values()) {
+          if (checkNow < anim.startTime + anim.duration) {
+            dirty.animation = true;
+            dirty.nodeVisuals = true;
+            break;
+          }
+        }
       }
 
       const camera = cameraRef.current;
@@ -520,7 +527,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (dirty.cameraBillboards) {
         dirty.nodeTransforms = true;
       }
-      if (!Object.values(dirty).some(Boolean)) return;
+      if (!Object.values(dirty).some(Boolean)) return false;
 
       const finishSceneUpdate = startGraphPerfMeasure(
         optionsRef.current.perfObserver,
@@ -541,7 +548,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       const graph = graphRef.current;
       if (!nodeMesh || !haloMesh || !shellMesh || !sparkPoints || !edgeLines || !graph) {
         finishSceneUpdate();
-        return;
+        return false;
       }
 
       const nodes = nodesRef.current;
@@ -654,7 +661,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       const colors = edgeColorsRef.current;
       if ((dirty.edgePositions && !positions) || (dirty.edgeVisuals && !colors)) {
         finishSceneUpdate();
-        return;
+        return false;
       }
 
       const visibleTypes = visibleEdgeTypeSetRef.current;
@@ -777,6 +784,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
 
       dirty.animation = false;
       finishSceneUpdate();
+      renderPendingRef.current = true;
+      return true;
     },
     [getNodeVisual, isRendererActive],
   );
@@ -1674,7 +1683,10 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         publishLayoutPositions('frame', { nowMs: time });
       }
       updateSceneObjects('frame');
-      renderer.render(scene, camera);
+      if (renderPendingRef.current || cameraMoved || layoutRunningRef.current) {
+        renderPendingRef.current = false;
+        renderer.render(scene, camera);
+      }
     };
 
     const pauseAnimationLoop = () => {

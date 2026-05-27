@@ -1,0 +1,65 @@
+[
+  {
+    "name": "GitNexus",
+    "path": "C:\\Users\\patij212\\Downloads\\GitNexus-main\\GitNexus-main",
+    "storagePath": "C:\\Users\\patij212\\Downloads\\GitNexus-main\\GitNexus-main\\.gitnexus",
+    "indexedAt": "2026-05-06T23:40:07.858Z",
+    "lastCommit": "cd4834b9780b8e36eb32c3e75511a527fe6ad13f",
+    "remoteUrl": "https://github.com/patij212/GitNexus",
+    "stats": {
+      "files": 981,
+      "nodes": 25603,
+      "edges": 33470,
+      "communities": 853,
+      "processes": 300,
+      "embeddings": 0
+    }
+  },
+  {
+    "name": "thruster_test_station",
+    "path": "C:\\Users\\patij212\\Downloads\\thruster_test_station",
+    "storagePath": "C:\\Users\\patij212\\Downloads\\thruster_test_station\\.gitnexus",
+    "indexedAt": "2026-05-25T09:46:48.208Z",
+    "lastCommit": "35dc73e145974d6397486dad1e53c2cad8a587b8",
+    "remoteUrl": "https://github.com/patij212/thruster_test_station",
+    "stats": {
+      "files": 330,
+      "nodes": 12586,
+      "edges": 26463,
+      "communities": 547,
+      "processes": 300,
+      "embeddings": 0
+    }
+  },
+  {
+    "name": "PotFoundry-Lite-v2.0",
+    "path": "C:\\Users\\patij212\\Downloads\\PotFoundry-Lite-v2.0\\potfoundry-web",
+    "storagePath": "C:\\Users\\patij212\\Downloads\\PotFoundry-Lite-v2.0\\potfoundry-web\\.gitnexus",
+    "indexedAt": "2026-05-25T13:29:47.463Z",
+    "lastCommit": "",
+    "stats": {
+      "files": 447,
+      "nodes": 15144,
+      "edges": 22328,
+      "communities": 485,
+      "processes": 300,
+      "embeddings": 0
+    }
+  },
+  {
+    "name": "thruster_test_station",
+    "path": "C:\\Users\\patij212\\Downloads\\thruster_test_station\\thruster_test_station",
+    "storagePath": "C:\\Users\\patij212\\Downloads\\thruster_test_station\\thruster_test_station\\.gitnexus",
+    "indexedAt": "2026-05-25T13:45:26.969Z",
+    "lastCommit": "99cc470d7dd1aaa9d61e85ee4a2b376a735adcfd",
+    "remoteUrl": "https://github.com/patij212/thruster_test_station",
+    "stats": {
+      "files": 405,
+      "nodes": 13360,
+      "edges": 27424,
+      "communities": 568,
+      "processes": 300,
+      "embeddings": 0
+    }
+  }
+]

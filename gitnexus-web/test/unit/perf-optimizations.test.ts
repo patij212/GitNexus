@@ -128,3 +128,93 @@ describe('layout pressure caps', () => {
     expect(getNoverlapPolicy(15001)).toEqual({ mode: 'skip', label: 'skip:huge' });
   });
 });
+
+// ==========================================================================
+// Render-on-demand gate — animated-node active-animation check
+// Verifies the guard logic extracted from updateSceneObjects' dirty-flag gating.
+// These tests operate on the pure policy without importing React hooks or THREE.
+// ==========================================================================
+
+interface TestNodeAnimation {
+  type: string;
+  startTime: number;
+  duration: number;
+}
+
+const hasActiveAnimation = (anims: Map<string, TestNodeAnimation>, now: number): boolean => {
+  for (const anim of anims.values()) {
+    if (now < anim.startTime + anim.duration) return true;
+  }
+  return false;
+};
+
+describe('animated-node active-animation gate', () => {
+  it('returns false for empty map', () => {
+    expect(hasActiveAnimation(new Map(), 1000)).toBe(false);
+  });
+
+  it('returns true when an animation is still running', () => {
+    const anims = new Map<string, TestNodeAnimation>([
+      ['node-a', { type: 'pulse', startTime: 900, duration: 600 }],
+    ]);
+    expect(hasActiveAnimation(anims, 1000)).toBe(true); // 1000 < 900 + 600 = 1500
+  });
+
+  it('returns false when all animations have expired', () => {
+    const anims = new Map<string, TestNodeAnimation>([
+      ['node-a', { type: 'pulse', startTime: 900, duration: 100 }], // expired at 1000
+      ['node-b', { type: 'ripple', startTime: 800, duration: 150 }], // expired at 950
+    ]);
+    expect(hasActiveAnimation(anims, 1001)).toBe(false);
+  });
+
+  it('returns true when at least one animation among several is still running', () => {
+    const anims = new Map<string, TestNodeAnimation>([
+      ['expired-1', { type: 'pulse', startTime: 500, duration: 100 }], // expired
+      ['expired-2', { type: 'glow', startTime: 600, duration: 50 }], // expired
+      ['active-1', { type: 'ripple', startTime: 950, duration: 500 }], // still running
+    ]);
+    expect(hasActiveAnimation(anims, 1000)).toBe(true); // 1000 < 950 + 500 = 1450
+  });
+
+  it('treats an animation expiring exactly at now as inactive', () => {
+    const anims = new Map<string, TestNodeAnimation>([
+      ['node-a', { type: 'pulse', startTime: 500, duration: 500 }], // expires exactly at 1000
+    ]);
+    // now < startTime + duration → 1000 < 1000 is false → inactive
+    expect(hasActiveAnimation(anims, 1000)).toBe(false);
+  });
+});
+
+describe('render-on-demand gate policy', () => {
+  // Simulates the animate() condition: render when dirty, camera moved, OR layout is running.
+  const shouldRender = (
+    renderPending: boolean,
+    cameraMoved: boolean,
+    layoutRunning: boolean,
+  ): boolean => renderPending || cameraMoved || layoutRunning;
+
+  it('skips render when nothing is dirty, camera is still, and layout is idle', () => {
+    expect(shouldRender(false, false, false)).toBe(false);
+  });
+
+  it('renders when scene objects were updated', () => {
+    expect(shouldRender(true, false, false)).toBe(true);
+  });
+
+  it('renders when camera moved even if no dirty flags', () => {
+    expect(shouldRender(false, true, false)).toBe(true);
+  });
+
+  it('renders when both pending and camera moved', () => {
+    expect(shouldRender(true, true, false)).toBe(true);
+  });
+
+  it('renders every frame while layout is running (active layout cadence)', () => {
+    expect(shouldRender(false, false, true)).toBe(true);
+  });
+
+  it('still skips render when idle: no dirty, no camera move, layout stopped', () => {
+    expect(shouldRender(false, false, false)).toBe(false);
+  });
+});

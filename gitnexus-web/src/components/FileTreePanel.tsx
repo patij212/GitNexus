@@ -6,6 +6,8 @@ import {
   FolderOpen,
   FileCode,
   Code,
+  Eye,
+  EyeOff,
   Search,
   Filter,
   PanelLeftClose,
@@ -39,6 +41,7 @@ import {
   FILTER_COLOR_LEGEND_LABELS,
   NODE_COLORS,
 } from '../lib/constants';
+import { isPathExcludedByFolder, normalizeFolderRenderPath } from '../lib/folder-render-filter';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
 // Tree node structure
@@ -105,6 +108,8 @@ interface TreeItemProps {
   expandedPaths: Set<string>;
   toggleExpanded: (path: string) => void;
   selectedPath: string | null;
+  excludedFolderPaths: Set<string>;
+  toggleFolderRenderExclusion: (path: string) => void;
 }
 
 const TreeItem = ({
@@ -115,10 +120,15 @@ const TreeItem = ({
   expandedPaths,
   toggleExpanded,
   selectedPath,
+  excludedFolderPaths,
+  toggleFolderRenderExclusion,
 }: TreeItemProps) => {
   const isExpanded = expandedPaths.has(node.path);
   const isSelected = selectedPath === node.path;
   const hasChildren = node.children.length > 0;
+  const normalizedPath = normalizeFolderRenderPath(node.path);
+  const isDirectlyExcluded = excludedFolderPaths.has(normalizedPath);
+  const isExcludedFromRender = isPathExcludedByFolder(node.path, excludedFolderPaths);
 
   // Filter children based on search (recursive)
   const filteredChildren = useMemo(() => {
@@ -141,38 +151,75 @@ const TreeItem = ({
     onNodeClick(node);
   };
 
+  const handleToggleRenderExclusion = () => {
+    toggleFolderRenderExclusion(node.path);
+  };
+
   return (
     <div>
-      <button
-        onClick={handleClick}
-        className={`relative flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm transition-colors hover:bg-hover ${isSelected ? 'border-l-2 border-amber-400 bg-amber-500/15 text-amber-300' : 'border-l-2 border-transparent text-text-secondary hover:text-text-primary'} ${matchesSearch ? 'bg-accent/10' : ''} `}
+      <div
+        className={`group relative flex w-full items-center rounded pr-1 text-sm transition-colors hover:bg-hover ${isSelected ? 'border-l-2 border-amber-400 bg-amber-500/15 text-amber-300' : 'border-l-2 border-transparent text-text-secondary hover:text-text-primary'} ${matchesSearch ? 'bg-accent/10' : ''} ${isExcludedFromRender ? 'opacity-55' : ''} `}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
-        {/* Expand/collapse icon */}
-        {hasChildren ? (
-          isExpanded ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+        <button
+          type="button"
+          onClick={handleClick}
+          className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pr-1 text-left"
+        >
+          {/* Expand/collapse icon */}
+          {hasChildren ? (
+            isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            )
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
-          )
-        ) : (
-          <span className="w-3.5" />
-        )}
+            <span className="w-3.5" />
+          )}
 
-        {/* Node icon */}
-        {node.type === 'folder' ? (
-          isExpanded ? (
-            <FolderOpen className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.Folder }} />
+          {/* Node icon */}
+          {node.type === 'folder' ? (
+            isExpanded ? (
+              <FolderOpen className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.Folder }} />
+            ) : (
+              <Folder className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.Folder }} />
+            )
           ) : (
-            <Folder className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.Folder }} />
-          )
-        ) : (
-          <FileCode className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.File }} />
-        )}
+            <FileCode className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.File }} />
+          )}
 
-        {/* Name */}
-        <span className="truncate font-mono text-xs">{node.name}</span>
-      </button>
+          {/* Name */}
+          <span
+            className={`truncate font-mono text-xs ${isExcludedFromRender ? 'line-through' : ''}`}
+          >
+            {node.name}
+          </span>
+        </button>
+
+        {node.type === 'folder' && (
+          <button
+            type="button"
+            onClick={handleToggleRenderExclusion}
+            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors ${
+              isDirectlyExcluded
+                ? 'text-amber-300 hover:bg-amber-500/15'
+                : 'text-text-muted opacity-0 group-hover:opacity-100 hover:bg-hover hover:text-text-primary focus:opacity-100'
+            }`}
+            title={
+              isDirectlyExcluded
+                ? `Include ${node.path} in graph rendering`
+                : `Exclude ${node.path} from graph rendering`
+            }
+            aria-pressed={isDirectlyExcluded}
+          >
+            {isDirectlyExcluded ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
+      </div>
 
       {/* Children */}
       {isExpanded && filteredChildren.length > 0 && (
@@ -187,6 +234,8 @@ const TreeItem = ({
               expandedPaths={expandedPaths}
               toggleExpanded={toggleExpanded}
               selectedPath={selectedPath}
+              excludedFolderPaths={excludedFolderPaths}
+              toggleFolderRenderExclusion={toggleFolderRenderExclusion}
             />
           ))}
         </div>
@@ -285,6 +334,8 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
     openCodePanel,
     depthFilter,
     setDepthFilter,
+    excludedFolderPaths,
+    toggleFolderRenderExclusion,
   } = useAppState();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -477,6 +528,8 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                   expandedPaths={expandedPaths}
                   toggleExpanded={toggleExpanded}
                   selectedPath={selectedPath}
+                  excludedFolderPaths={excludedFolderPaths}
+                  toggleFolderRenderExclusion={toggleFolderRenderExclusion}
                 />
               ))
             )}

@@ -198,6 +198,10 @@ interface AppState {
   // Query state
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
+  excludedFolderPaths: Set<string>;
+  setExcludedFolderPaths: (paths: Set<string>) => void;
+  toggleFolderRenderExclusion: (path: string) => void;
+  clearFolderRenderExclusions: () => void;
   // AI highlights (toggable)
   aiCitationHighlightedNodeIds: Set<string>;
   aiToolHighlightedNodeIds: Set<string>;
@@ -306,6 +310,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     highlightedNodeIds,
     setHighlightedNodeIds,
+    excludedFolderPaths,
+    setExcludedFolderPaths,
+    toggleFolderRenderExclusion,
+    clearFolderRenderExclusions,
   } = useGraphState();
 
   // Right Panel
@@ -1139,6 +1147,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Clear stale graph state from previous repo (highlights, selections, blast radius)
       // Without this, sigma reducers dim ALL nodes/edges because old node IDs don't match
       setHighlightedNodeIds(new Set());
+      clearFolderRenderExclusions();
       clearAIToolHighlights();
       clearAICitationHighlights();
       clearBlastRadius();
@@ -1256,6 +1265,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setGraph,
       initializeAgent,
       setHighlightedNodeIds,
+      clearFolderRenderExclusions,
       clearAIToolHighlights,
       clearAICitationHighlights,
       clearBlastRadius,
@@ -1328,6 +1338,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     highlightedNodeIds,
     setHighlightedNodeIds,
+    excludedFolderPaths,
+    setExcludedFolderPaths,
+    toggleFolderRenderExclusion,
+    clearFolderRenderExclusions,
     aiCitationHighlightedNodeIds,
     aiToolHighlightedNodeIds,
     blastRadiusNodeIds,
