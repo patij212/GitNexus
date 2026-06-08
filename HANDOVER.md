@@ -9,9 +9,10 @@ uncommitted `AGENTS.md` / `CLAUDE.md` edits there are exactly as you left them._
 
 - **Worktree:** `C:\Users\patij212\Downloads\gitnexus-merge-prototype`
 - **Branch:** `integration/upstream-merge-prototype` (off your fork HEAD `16057300`)
-- **Two tested fixes committed** on that branch:
+- **Three tested changes committed** on that branch:
   - `6ac663ec` fix(scope): synthesize a Module scope instead of dropping the file
   - `ba197e54` fix(status): surface uncommitted working-tree changes
+  - `fcb49b30` feat(graph-3d): semantic architectural-depth Z axis for the 3D view (opt-in)
 - Two docs (this file + `INTEGRATION-PLAYBOOK.md`) at the worktree root.
 
 To inspect: `cd` to the worktree and `git log --oneline -4`, `git show 6ac663ec`, `git show ba197e54`.
@@ -40,6 +41,32 @@ silently wrong. Added `countWorkingTreeChanges` (`git status --porcelain` via
 existing `Status:` line is byte-identical, so output assertions still hold.
 - Files: `gitnexus/src/storage/git.ts`, `gitnexus/src/cli/status.ts` (+ test).
 - **Tests: 18/18 git-utility tests pass.**
+
+### Feature 3 — semantic architectural-depth Z for the 3D graph view (`fcb49b30`)
+The fork's highest-value surface is the 3D graph. Its Z axis was *noise* —
+nodes were scattered on depth by a hash of their id (and then a weak force
+flattened them toward one plane), so the third dimension carried no meaning.
+This adds an opt-in **`layered` depth mode** that places nodes on
+architectural-depth strata (Project → Package → Module → Folder → File → type →
+callable → member), turning Z into readable software hierarchy — a genuine
+expansion of both graphing *capability* (the third dimension now encodes
+structure) and *resolution* (you can read architecture spatially).
+- New pure module `gitnexus-web/src/lib/graph-depth.ts` (level → Z mapping).
+- `graph-render-model.ts`: layered mode seeds each node's initial Z and a
+  per-node stratum force-target (`attributes.z` / `attributes.depthZ`).
+- `useThreeGraph.ts`: the 3D `forceZ` now pulls each node toward its stratum
+  (firmer when targeted). **With no target it is byte-identical to the original
+  `forceZ(0).strength(0.012)`**, so the default view is unchanged.
+- `GraphCanvas.tsx`: a 3D-only **Layers** toggle (organic ↔ layered), wired
+  exactly like the existing colour-mode controls.
+- **Default `depthMode` is `organic`**, so nothing changes until you toggle it.
+- **Validation:** new `graph-depth.test.ts` + a layered-mode render-model test;
+  **full web unit suite 308/308 pass**; `tsc --noEmit` 0 errors across the web
+  package. The *visual* result of layered mode needs an in-browser pass (run the
+  web app, switch to 3D, click the Layers button) — I can't drive a browser here.
+
+**To try it:** run the web app, switch the graph to **3D**, then click the
+**Layers** icon in the right-hand control rail (next to the camera buttons).
 
 ## Validation
 
@@ -89,6 +116,7 @@ so tests could resolve the `gitnexus-shared` package — it's gitignored and
 harmless, and disappears when you remove the worktree.
 
 ## Suggested next steps
-1. Cherry-pick the two fixes into your real branch (they're independent and low-risk).
-2. When you have a supervised window, run the merge per `INTEGRATION-PLAYBOOK.md` — lead with the storage/read-only cluster (it makes the shadow-replay incident self-heal) and the true-incremental commit (kills the analyze treadmill).
-3. Optional third fix not done tonight: the `embeddings: 0` discoverability nudge in semantic search (flagged as novel/low-risk; no upstream equivalent).
+1. Cherry-pick the three changes into your real branch (independent, low-risk): `git cherry-pick 6ac663ec ba197e54 fcb49b30`.
+2. Visually confirm the 3D **layered** depth mode — the one thing I couldn't verify: run the web app → switch to 3D → click the Layers toggle. Tune the stratum pull (`useThreeGraph` forceZ strength `0.16`) or spacing (`graph-depth.ts` `depthLevelToZ`) to taste.
+3. When you have a supervised window, run the merge per `INTEGRATION-PLAYBOOK.md` — lead with the storage/read-only cluster and the true-incremental commit. Note: `graph-depth.ts` is net-new (no conflict), but `GraphCanvas.tsx` / `useThreeGraph.ts` / `graph-render-model.ts` are merge hotspots, so this feature's edits will need re-applying onto upstream's renderer.
+4. Further graph capability/resolution ideas (not yet built): per-stratum labels + distance-based level-of-detail in 3D, a "hotspot" composite colour mode (complexity × churn × impact), and edge bundling by relation type.
