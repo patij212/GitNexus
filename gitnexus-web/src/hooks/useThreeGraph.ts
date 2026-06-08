@@ -62,7 +62,10 @@ interface UseThreeGraphOptions {
 }
 
 interface UseThreeGraphReturn {
-  containerRef: React.RefObject<HTMLDivElement>;
+  // React 19: `useRef<HTMLDivElement>(null)` is `RefObject<HTMLDivElement | null>`,
+  // and DOM `ref` props accept that shape — so this matches both the hook's
+  // return and the `<div ref>` consumer.
+  containerRef: React.RefObject<HTMLDivElement | null>;
   setGraph: (
     graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
     options?: ThreeSetGraphOptions,
