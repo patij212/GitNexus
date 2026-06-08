@@ -1375,32 +1375,41 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     }
     labelPoolRef.current = labelPool;
 
-    const refreshLabels = (nowMs: number, force: boolean): void => {
-      if (nowMs - labelSelectAtRef.current < LABEL_REFRESH_MS && !force) return;
-      labelSelectAtRef.current = nowMs;
+    let labelChosen: number[] = [];
 
+    const refreshLabels = (nowMs: number, reselect: boolean): void => {
       const nodes = nodesRef.current;
-      const candidates: LabelCandidate[] = [];
-      for (let i = 0; i < nodes.length; i += 1) {
-        const node = nodes[i]!;
-        if (node.attributes.hidden) continue;
-        const dx = (node.x ?? 0) - camera.position.x;
-        const dy = (node.y ?? 0) - camera.position.y;
-        const dz = (node.z ?? 0) - camera.position.z;
-        candidates.push({
-          index: i,
-          importance: labelImportance(
-            node.attributes.nodeType,
-            node.attributes.dependencyCount ?? 0,
-          ),
-          distanceSq: dx * dx + dy * dy + dz * dz,
-        });
+      // Reselection (the O(n) candidate build + top-K) is throttled to
+      // LABEL_REFRESH_MS — never per-frame, even while the camera moves or the
+      // layout ticks. `reselect` forces it only on genuine one-shot events
+      // (labels just enabled / graph reload).
+      if (reselect || nowMs - labelSelectAtRef.current >= LABEL_REFRESH_MS) {
+        labelSelectAtRef.current = nowMs;
+        const candidates: LabelCandidate[] = [];
+        for (let i = 0; i < nodes.length; i += 1) {
+          const node = nodes[i]!;
+          if (node.attributes.hidden) continue;
+          const dx = (node.x ?? 0) - camera.position.x;
+          const dy = (node.y ?? 0) - camera.position.y;
+          const dz = (node.z ?? 0) - camera.position.z;
+          candidates.push({
+            index: i,
+            importance: labelImportance(
+              node.attributes.nodeType,
+              node.attributes.dependencyCount ?? 0,
+            ),
+            distanceSq: dx * dx + dy * dy + dz * dz,
+          });
+        }
+        labelChosen = selectLabelIndices(candidates, labelPool.length);
       }
-      const chosen = selectLabelIndices(candidates, labelPool.length);
+      // Reposition the chosen labels every call (cheap, O(pool)=36) so they stay
+      // glued to nodes as the layout moves them between reselections.
       for (let i = 0; i < labelPool.length; i += 1) {
         const labelObject = labelPool[i]!;
-        if (i < chosen.length) {
-          const node = nodes[chosen[i]!]!;
+        const nodeIndex = labelChosen[i];
+        const node = nodeIndex === undefined ? undefined : nodes[nodeIndex];
+        if (node && !node.attributes.hidden) {
           labelObject.element.textContent = truncateLabel(node.attributes.label ?? '');
           labelObject.position.set(node.x ?? 0, node.y ?? 0, node.z ?? 0);
           labelObject.visible = true;
@@ -1483,6 +1492,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     let pointerDownClientX = 0;
     let pointerDownClientY = 0;
     let cameraMovingUntil = 0;
+    let labelsActive = false;
 
     const resize = () => {
       const width = Math.max(1, container.clientWidth);
@@ -1776,12 +1786,17 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (renderPendingRef.current || cameraMoved || layoutRunningRef.current) {
         renderPendingRef.current = false;
         renderer.render(scene, camera);
+        // Labels: only touch the CSS2D layer when the feature is on (default-off
+        // pays nothing). `reselect` is forced only on the enable edge.
         if (optionsRef.current.showLabels) {
-          refreshLabels(time, cameraMoved || layoutRunningRef.current);
-        } else {
+          refreshLabels(time, !labelsActive);
+          labelsActive = true;
+          labelRenderer.render(scene, camera);
+        } else if (labelsActive) {
           for (const labelObject of labelPool) labelObject.visible = false;
+          labelRenderer.render(scene, camera);
+          labelsActive = false;
         }
-        labelRenderer.render(scene, camera);
       }
     };
 
@@ -1825,7 +1840,9 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       arcball.dispose();
       pointerLock.dispose();
       renderer.dispose();
-      container.removeChild(renderer.domElement);
+      if (renderer.domElement.parentNode === container) {
+        container.removeChild(renderer.domElement);
+      }
       for (const labelObject of labelPool) scene.remove(labelObject);
       labelPoolRef.current = [];
       if (labelRenderer.domElement.parentNode === container) {

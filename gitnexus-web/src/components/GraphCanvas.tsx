@@ -1011,6 +1011,20 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       syncRendererGraph,
     ]);
 
+    // depthMode moves nodes on Z (architectural strata) — unlike colorMode it
+    // needs a layout pass to take visual effect. The visual-only rebuild keeps the
+    // old positions (runLayout:false), so when depthMode changes on an active 3D
+    // graph, restart the force layout; forceZ then pulls each node to its stratum
+    // (layered) or back toward the origin plane (organic).
+    const prevDepthModeRef = useRef(graphDepthMode);
+    useEffect(() => {
+      if (prevDepthModeRef.current === graphDepthMode) return;
+      prevDepthModeRef.current = graphDepthMode;
+      if (graphViewMode === '3d' && renderGraph3DRef.current) {
+        startThreeLayout();
+      }
+    }, [graphDepthMode, graphViewMode, startThreeLayout]);
+
     useEffect(() => {
       if (
         !isAIHighlightsEnabled ||

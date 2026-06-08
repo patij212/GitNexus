@@ -557,17 +557,18 @@ export const buildGraphRenderModel = (
       communityIndex,
       includeCommunityAttributes,
     });
-    const communityOffset =
-      communityIndex === undefined ? 0 : ((communityIndex % 9) - 4) * zSpread * 0.055;
     let z: number;
     if (depthMode === 'layered') {
       // Place the node on its architectural-depth stratum, with a small
       // deterministic jitter so a layer reads as a thick band, not a flat plane.
+      // (Layered mode intentionally ignores the community Z-offset.)
       const depthZ = depthLevelToZ(getNodeDepthLevel(node.label), zSpread);
       z = depthZ + centeredUnit(`${node.id}:depth`) * depthStratumGap(zSpread) * 0.6;
       attributes.z = z;
       attributes.depthZ = depthZ;
     } else {
+      const communityOffset =
+        communityIndex === undefined ? 0 : ((communityIndex % 9) - 4) * zSpread * 0.055;
       z = (hashToUnit(node.id) - 0.5) * zSpread + communityOffset;
     }
 
