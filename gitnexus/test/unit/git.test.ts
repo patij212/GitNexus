@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -8,14 +8,17 @@ import {
   getCurrentCommit,
   getGitRoot,
   findGitRootByDotGit,
+  countWorkingTreeChanges,
 } from '../../src/storage/git.js';
 
-// Mock child_process.execSync
+// The child_process module is mocked; both sync helpers are stubbed per-test.
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
 const mockExecSync = vi.mocked(execSync);
+const mockExecFileSync = vi.mocked(execFileSync);
 
 describe('git utilities', () => {
   beforeEach(() => {
@@ -65,6 +68,30 @@ describe('git utilities', () => {
     it('trims whitespace from output', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('  sha256hash  \n'));
       expect(getCurrentCommit('/project')).toBe('sha256hash');
+    });
+  });
+
+  describe('countWorkingTreeChanges', () => {
+    it('counts porcelain status lines (modified, staged, untracked)', () => {
+      mockExecFileSync.mockReturnValueOnce(Buffer.from(' M src/a.ts\nA  src/b.ts\n?? src/c.ts\n'));
+      expect(countWorkingTreeChanges('/project')).toBe(3);
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['status', '--porcelain'],
+        expect.objectContaining({ cwd: '/project' }),
+      );
+    });
+
+    it('returns 0 for a clean working tree', () => {
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('\n'));
+      expect(countWorkingTreeChanges('/project')).toBe(0);
+    });
+
+    it('returns 0 when git is unavailable', () => {
+      mockExecFileSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
+      expect(countWorkingTreeChanges('/nope')).toBe(0);
     });
   });
 

@@ -5,7 +5,12 @@
  */
 
 import { findRepo, getStoragePaths, hasKuzuIndex } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import {
+  getCurrentCommit,
+  isGitRepo,
+  getGitRoot,
+  countWorkingTreeChanges,
+} from '../storage/git.js';
 
 export const statusCommand = async () => {
   const cwd = process.cwd();
@@ -38,4 +43,16 @@ export const statusCommand = async () => {
   console.log(`Indexed commit: ${repo.meta.lastCommit?.slice(0, 7)}`);
   console.log(`Current commit: ${currentCommit?.slice(0, 7)}`);
   console.log(`Status: ${isUpToDate ? '✅ up-to-date' : '⚠️ stale (re-run gitnexus analyze)'}`);
+
+  // A matching commit doesn't mean the index reflects the working tree: edits
+  // that are staged, unstaged, or newly added (non-ignored) are invisible to a
+  // commit-only comparison, yet they change what impact analysis should see.
+  const workingTreeChanges = countWorkingTreeChanges(repo.repoPath);
+  if (workingTreeChanges > 0) {
+    const plural = workingTreeChanges === 1 ? '' : 's';
+    console.log(
+      `Working tree: ⚠️ ${workingTreeChanges} uncommitted change${plural} not reflected in the index` +
+        (isUpToDate ? ' (re-run gitnexus analyze to include them)' : ''),
+    );
+  }
 };

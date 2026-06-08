@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { statSync } from 'fs';
 import path from 'path';
 
@@ -28,6 +28,30 @@ export const getCurrentCommit = (repoPath: string): string => {
       .trim();
   } catch {
     return '';
+  }
+};
+
+/**
+ * Count uncommitted working-tree changes — modified, staged, and untracked
+ * non-ignored files — via `git status --porcelain`. Returns 0 when the tree is
+ * clean or git is unavailable. Uses `execFileSync` (no shell) like the other
+ * git helpers in core/git-staleness.
+ *
+ * `status` uses this so a clean commit match isn't reported as a bare
+ * "up-to-date" while the working tree holds edits the index hasn't seen
+ * (a real source of "why is my impact analysis wrong?" confusion).
+ */
+export const countWorkingTreeChanges = (repoPath: string): number => {
+  try {
+    const out = execFileSync('git', ['status', '--porcelain'], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    return out === '' ? 0 : out.split('\n').length;
+  } catch {
+    return 0;
   }
 };
 
