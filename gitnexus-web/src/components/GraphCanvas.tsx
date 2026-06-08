@@ -29,6 +29,7 @@ import {
   LightbulbOff,
   Navigation,
   Layers,
+  Flame,
   Orbit,
   Square,
   Box,
@@ -271,6 +272,16 @@ const COLOR_MODE_DETAILS: Record<GraphColorMode, ColorModeDetails> = {
     lowLabel: 'stable',
     highLabel: 'frequently changed',
     legend: GRAPH_COLOR_MODE_LEGENDS.churn,
+  },
+  hotspot: {
+    title: 'Hotspot Lens',
+    eyebrow: 'Maintenance risk',
+    description:
+      'Hotter, larger nodes combine high complexity, recent churn, and wide impact — the code most likely to need careful change.',
+    metric: 'Complexity × churn, amplified by impact',
+    lowLabel: 'stable',
+    highLabel: 'risky hotspot',
+    legend: GRAPH_COLOR_MODE_LEGENDS.hotspot,
   },
 };
 
@@ -1336,6 +1347,11 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         mode: 'churn',
         Icon: RefreshCw,
         activeClass: 'border-lime-400/50 bg-lime-500/15 text-lime-200',
+      },
+      {
+        mode: 'hotspot',
+        Icon: Flame,
+        activeClass: 'border-rose-400/50 bg-rose-500/15 text-rose-200',
       },
     ];
 

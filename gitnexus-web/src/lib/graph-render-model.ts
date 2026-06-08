@@ -183,6 +183,27 @@ const getChurnValue = (node: GraphNode): number =>
       node.properties.gitChurn,
   );
 
+/**
+ * Composite "maintenance hotspot" score in [0,1] from signals the model already
+ * computes. The classic hotspot is high complexity AND high churn (a geometric
+ * mean, so both must be present), amplified by impact — risky code that many
+ * things depend on is worse. A complexity/impact floor keeps complex or
+ * widely-depended-on code visible even when churn data is absent (e.g. a repo
+ * indexed without git history).
+ */
+export const computeHotspotScore = (
+  complexityScore: number,
+  churnScore: number,
+  impactScore: number,
+): number => {
+  const clamp01 = (value: number): number => (value < 0 ? 0 : value > 1 ? 1 : value);
+  const complexity = clamp01(complexityScore);
+  const churn = clamp01(churnScore);
+  const impact = clamp01(impactScore);
+  const bothHigh = Math.sqrt(complexity * churn);
+  return clamp01(0.6 * bothHigh + 0.25 * complexity + 0.15 * impact);
+};
+
 const getNodeVisual = (
   baseColor: string,
   baseSize: number,
@@ -282,6 +303,20 @@ const getNodeVisual = (
     return {
       color: getMetricColor('churn', churnScore),
       size: baseSize * (1 + churnScore * 0.7),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  if (colorMode === 'hotspot') {
+    const hotspotScore = computeHotspotScore(complexityScore, churnScore, impactScore);
+    return {
+      color: getMetricColor('hotspot', hotspotScore),
+      size: baseSize * (1 + hotspotScore * 0.9),
       healthScore,
       impactScore,
       runtimeScore,

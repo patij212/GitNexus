@@ -67,6 +67,7 @@ export {
   Folder,
   FolderOpen,
   GitBranch,
+  Flame,
   Globe,
   Hash,
   Heart,

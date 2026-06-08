@@ -3,6 +3,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph';
 import {
   buildGraphRenderModel,
   colorToNumber,
+  computeHotspotScore,
   createVisibilityBitset,
   graphRenderModelToGraphology,
 } from '../../src/lib/graph-render-model';
@@ -13,6 +14,33 @@ import {
   createFileNode,
   createFunctionNode,
 } from '../fixtures/graph';
+
+describe('computeHotspotScore', () => {
+  it('is 0 when all signals are 0 and saturates to 1 when all are 1', () => {
+    expect(computeHotspotScore(0, 0, 0)).toBe(0);
+    expect(computeHotspotScore(1, 1, 1)).toBeCloseTo(1);
+  });
+
+  it('rewards complexity AND churn together more than either alone', () => {
+    const both = computeHotspotScore(0.8, 0.8, 0);
+    expect(both).toBeGreaterThan(computeHotspotScore(0.8, 0, 0));
+    expect(both).toBeGreaterThan(computeHotspotScore(0, 0.8, 0));
+  });
+
+  it('keeps complex code visible even when churn data is absent', () => {
+    expect(computeHotspotScore(1, 0, 0)).toBeGreaterThan(0);
+  });
+
+  it('lets impact amplify without dominating', () => {
+    expect(computeHotspotScore(0.5, 0.5, 1)).toBeGreaterThan(computeHotspotScore(0.5, 0.5, 0));
+    expect(computeHotspotScore(0, 0, 1)).toBeLessThan(0.2);
+  });
+
+  it('clamps out-of-range inputs into [0,1]', () => {
+    expect(computeHotspotScore(2, 2, 2)).toBeLessThanOrEqual(1);
+    expect(computeHotspotScore(-1, -1, -1)).toBeGreaterThanOrEqual(0);
+  });
+});
 
 describe('buildGraphRenderModel', () => {
   it('is deterministic for positions, colors, endpoints, and curvature', () => {
@@ -66,6 +94,14 @@ describe('buildGraphRenderModel', () => {
     const fnDepth = fnNodes[0]!.attributes.depthZ!;
     expect(fileDepth).toBeGreaterThan(fnDepth);
     fnNodes.forEach((n) => expect(n.attributes.depthZ).toBeCloseTo(fnDepth));
+  });
+
+  it('hotspot colorMode yields deterministic risk colours for every node', () => {
+    const graph = createDeterministicKnowledgeGraphFixture({ fileCount: 2, functionsPerFile: 2 });
+    const a = buildGraphRenderModel(graph, undefined, { colorMode: 'hotspot' });
+    const b = buildGraphRenderModel(graph, undefined, { colorMode: 'hotspot' });
+    expect(Array.from(a.nodeColors)).toEqual(Array.from(b.nodeColors));
+    a.nodes.forEach((node) => expect(node.attributes.color).toMatch(/^#[0-9a-f]{6}$/i));
   });
 
   it('round-trips stable model indexes, colors, and curvature into graphology attrs', () => {

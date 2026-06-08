@@ -8,7 +8,8 @@ export type GraphColorMode =
   | 'runtime'
   | 'agent'
   | 'complexity'
-  | 'churn';
+  | 'churn'
+  | 'hotspot';
 
 export type GraphMetricColorMode = Exclude<GraphColorMode, 'type' | 'structure' | 'agent'>;
 
@@ -177,6 +178,12 @@ export const GRAPH_HEATMAP_COLORS: Record<
     elevated: '#eab308',
     high: '#f97316',
   },
+  hotspot: {
+    low: '#475569',
+    medium: '#f59e0b',
+    elevated: '#f97316',
+    high: '#e11d48',
+  },
 };
 
 export const GRAPH_AGENT_COLORS = {
@@ -273,6 +280,11 @@ export const GRAPH_COLOR_MODE_LEGENDS: Record<GraphColorMode, LegendItem[]> = {
     { color: GRAPH_HEATMAP_COLORS.churn.low, label: 'Low' },
     { color: GRAPH_HEATMAP_COLORS.churn.medium, label: 'Medium' },
     { color: GRAPH_HEATMAP_COLORS.churn.high, label: 'High' },
+  ],
+  hotspot: [
+    { color: GRAPH_HEATMAP_COLORS.hotspot.low, label: 'Stable' },
+    { color: GRAPH_HEATMAP_COLORS.hotspot.medium, label: 'Watch' },
+    { color: GRAPH_HEATMAP_COLORS.hotspot.high, label: 'Hotspot' },
   ],
 };
 
