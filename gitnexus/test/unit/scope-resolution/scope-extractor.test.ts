@@ -123,6 +123,34 @@ describe('Pass 1: scope tree', () => {
     expect(result.moduleScope).toBe(result.scopes[0]!.id);
   });
 
+  it('synthesizes a spanning Module and re-parents orphans when no @scope.module is emitted', () => {
+    // Provider emitted a class containing a function but NO module scope — the
+    // failure mode that used to abort the whole file ("no Module scope found").
+    const result = extract(
+      [scopeMatch('class', 2, 0, 40, 0), scopeMatch('function', 5, 2, 20, 0)],
+      'no-module.ts',
+      mockProvider(),
+    );
+
+    // A single synthetic Module root is created instead of throwing.
+    const modules = result.scopes.filter((s) => s.kind === 'Module');
+    expect(modules).toHaveLength(1);
+    const mod = modules[0]!;
+    expect(mod.parent).toBeNull();
+    expect(result.moduleScope).toBe(mod.id);
+
+    // It spans the captured scopes so position-containment nests refs under it.
+    expect(mod.range).toEqual({ startLine: 2, startCol: 0, endLine: 40, endCol: 0 });
+
+    // The orphan top-level Class is re-parented under the Module (single root),
+    // and the function nested inside the class keeps its original parent.
+    const klass = result.scopes.find((s) => s.kind === 'Class')!;
+    const fn = result.scopes.find((s) => s.kind === 'Function')!;
+    expect(klass.parent).toBe(mod.id);
+    expect(fn.parent).toBe(klass.id);
+    expect(result.scopes.filter((s) => s.parent === null).map((s) => s.id)).toEqual([mod.id]);
+  });
+
   it('nests Class under Module when the class range is contained in the module range', () => {
     const result = extract(
       [scopeMatch('module', 1, 0, 100, 0), scopeMatch('class', 5, 0, 50, 0)],
@@ -195,10 +223,16 @@ describe('Pass 1: scope tree', () => {
     ).toThrow(/overlap/i);
   });
 
-  it('throws when no Module scope is present', () => {
-    expect(() => extract([scopeMatch('function', 1, 0, 10, 0)], 'a.ts', mockProvider())).toThrow(
-      /Module/,
-    );
+  it('does not throw when no Module scope is present — synthesizes one instead', () => {
+    // Behavior change: previously threw "no Module scope found" and the entire
+    // file was dropped from the index. A lone function scope with no enclosing
+    // module is now wrapped in a synthetic Module so the file is still indexed.
+    const result = extract([scopeMatch('function', 1, 0, 10, 0)], 'a.ts', mockProvider());
+    const fn = result.scopes.find((s) => s.kind === 'Function')!;
+    const mod = result.scopes.find((s) => s.kind === 'Module')!;
+    expect(mod).toBeDefined();
+    expect(fn.parent).toBe(mod.id);
+    expect(result.moduleScope).toBe(mod.id);
   });
 });
 

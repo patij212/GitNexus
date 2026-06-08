@@ -122,7 +122,7 @@ export function extract(
 
   // ── Pass 1: build the scope tree ─────────────────────────────────────
   const scopeDrafts = pass1BuildScopes(partitioned.scope, filePath, provider);
-  const moduleScope = ensureModuleScope(scopeDrafts, matches.length, filePath);
+  const moduleScope = ensureModuleScope(scopeDrafts, filePath);
   const scopes = scopeDrafts.map(draftToScope);
   // buildScopeTree validates invariants (throws on violation) and exposes
   // the lookup contract consumed by Passes 2-5.
@@ -276,31 +276,69 @@ interface ScopeDraft {
   readonly typeBindings: Map<string, TypeRef>;
 }
 
-function ensureModuleScope(
-  scopeDrafts: ScopeDraft[],
-  matchCount: number,
-  filePath: string,
-): ScopeDraft {
-  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
-  if (moduleScope !== undefined) return moduleScope;
+function ensureModuleScope(scopeDrafts: ScopeDraft[], filePath: string): ScopeDraft {
+  const existing = scopeDrafts.find((s) => s.kind === 'Module');
+  if (existing !== undefined) return existing;
 
-  if (scopeDrafts.length === 0 && matchCount === 0) {
-    const range: Range = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
-    const synthetic = makeDraft(
-      makeScopeId({ filePath, range, kind: 'Module' }),
-      null,
-      'Module',
-      range,
-      filePath,
-    );
-    scopeDrafts.push(synthetic);
-    return synthetic;
+  // No `@scope.module` was emitted. A well-behaved provider always emits one,
+  // but real inputs don't always cooperate: a file that tree-sitter parses to
+  // an ERROR root, or a provider with a scope-coverage gap, can yield class /
+  // function scopes with no enclosing module. Historically this threw and the
+  // ENTIRE file was dropped from the index (observed: a legacy `.ts` file
+  // aborting analysis with "no Module scope found"). Synthesize a Module
+  // instead so the file is still indexed — degraded but present beats lost.
+  //
+  // The synthetic Module spans the existing drafts so `buildPositionIndex`
+  // containment nests top-level references under it; `canParentScope` permits
+  // a Module whose range equals its (non-Module) child, so an exact span is
+  // safe even when a single top-level scope covers the whole file.
+  const range = spanningRange(scopeDrafts);
+  const synthetic = makeDraft(
+    makeScopeId({ filePath, range, kind: 'Module' }),
+    null,
+    'Module',
+    range,
+    filePath,
+  );
+
+  // Re-parent existing roots under the synthetic Module: `buildScopeTree`
+  // requires every non-Module scope to have a parent, so leaving orphans with
+  // `parent === null` would just trade the throw for a `ScopeTreeInvariantError`.
+  // `ScopeDraft.parent` is readonly, and this runs before Pass 2 populates
+  // bindings/defs, so reconstructing the draft (same id, new parent) is lossless.
+  for (let i = 0; i < scopeDrafts.length; i++) {
+    const draft = scopeDrafts[i]!;
+    if (draft.parent === null) {
+      scopeDrafts[i] = makeDraft(draft.id, synthetic.id, draft.kind, draft.range, draft.filePath);
+    }
   }
 
-  throw new Error(
-    `ScopeExtractor: no Module scope found for '${filePath}'. ` +
-      `Provider must emit at least one @scope.module capture per file.`,
-  );
+  scopeDrafts.push(synthetic);
+  return synthetic;
+}
+
+/**
+ * Smallest range covering every draft — the synthetic Module's span. Empty
+ * input yields the zero range (an empty file's Module), preserving the
+ * historical empty-file behavior.
+ */
+function spanningRange(drafts: readonly ScopeDraft[]): Range {
+  const first = drafts[0];
+  if (first === undefined) {
+    return { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
+  }
+  let { startLine, startCol, endLine, endCol } = first.range;
+  for (const { range } of drafts) {
+    if (range.startLine < startLine || (range.startLine === startLine && range.startCol < startCol)) {
+      startLine = range.startLine;
+      startCol = range.startCol;
+    }
+    if (range.endLine > endLine || (range.endLine === endLine && range.endCol > endCol)) {
+      endLine = range.endLine;
+      endCol = range.endCol;
+    }
+  }
+  return { startLine, startCol, endLine, endCol };
 }
 
 function draftToScope(draft: ScopeDraft): Scope {

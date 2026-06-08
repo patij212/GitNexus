@@ -146,15 +146,19 @@ describe('extractParsedFile', () => {
       expect(warnings[0]).toContain('provider boom');
     });
 
-    it('returns undefined when ScopeExtractor throws (missing Module scope)', () => {
-      // Emits a Class scope but no Module — extractor throws; helper
-      // swallows and returns undefined. Legacy parsing on the same file
-      // continues unaffected by this failure.
+    it('synthesizes a Module (does not drop the file) when no Module scope is emitted', () => {
+      // Behavior change: emits a Class scope but no Module. The extractor now
+      // wraps it in a synthetic Module instead of throwing, so the file is
+      // indexed (degraded but present) rather than silently dropped.
       const provider = fakeProvider({
         emitScopeCaptures: () => [{ '@scope.class': cap('@scope.class', 5, 0, 10, 0) }],
       });
       const result = extractParsedFile(provider, 'src', 'a.ts');
-      expect(result).toBeUndefined();
+      expect(result).toBeDefined();
+      const mod = result!.scopes.find((s) => s.kind === 'Module');
+      const klass = result!.scopes.find((s) => s.kind === 'Class');
+      expect(mod).toBeDefined();
+      expect(klass?.parent).toBe(mod!.id);
     });
 
     it('returns undefined when ScopeExtractor throws on malformed captures (overlap)', () => {
