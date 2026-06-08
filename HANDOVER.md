@@ -9,10 +9,11 @@ uncommitted `AGENTS.md` / `CLAUDE.md` edits there are exactly as you left them._
 
 - **Worktree:** `C:\Users\patij212\Downloads\gitnexus-merge-prototype`
 - **Branch:** `integration/upstream-merge-prototype` (off your fork HEAD `16057300`)
-- **Three tested changes committed** on that branch:
+- **Four tested changes committed** on that branch:
   - `6ac663ec` fix(scope): synthesize a Module scope instead of dropping the file
   - `ba197e54` fix(status): surface uncommitted working-tree changes
   - `fcb49b30` feat(graph-3d): semantic architectural-depth Z axis for the 3D view (opt-in)
+  - `7f93e190` feat(graph): "hotspot" colour mode (complexity × churn × impact)
 - Two docs (this file + `INTEGRATION-PLAYBOOK.md`) at the worktree root.
 
 To inspect: `cd` to the worktree and `git log --oneline -4`, `git show 6ac663ec`, `git show ba197e54`.
@@ -68,6 +69,35 @@ structure) and *resolution* (you can read architecture spatially).
 **To try it:** run the web app, switch the graph to **3D**, then click the
 **Layers** icon in the right-hand control rail (next to the camera buttons).
 
+### Feature 4 — "hotspot" composite colour mode (`7f93e190`)
+A 9th graph colour mode that blends the three risk signals the model already
+computes — **complexity × churn, amplified by impact** — into one score, so the
+code most likely to need careful change lights up (hot = crimson, larger) in
+**both** the 2D and 3D views. Composes with the depth layers: you can see
+hotspots distributed across architectural strata.
+- `computeHotspotScore` is pure, exported, and unit-tested: a geometric mean of
+  complexity × churn (the classic hotspot — both must be high) plus a
+  complexity/impact floor so complex or widely-depended-on code still shows when
+  git-churn data is absent.
+- Wired through the existing colour-mode machinery: `constants` (palette +
+  legend), `graph-render-model` (score + a `getNodeVisual` branch), `GraphCanvas`
+  (lens details + a **Flame** toggle), `lucide-icons` (Flame re-export).
+- **Validation:** 6 new tests; full web unit suite **314/314 pass**; app
+  typecheck clean for every changed file.
+- **To try it:** click the **Flame** icon in the colour-mode control row.
+
+### ⚠️ Build / typecheck caveats (discovered this session)
+- The **correct** web typecheck is `tsc -p tsconfig.app.json`. The root
+  `tsconfig.json` is a references-only *solution* config (`"files": []`), so
+  `tsc --noEmit` on it silently checks **nothing**. All four changes above are
+  clean under the real check; the graph-3d feature was re-verified this way.
+- There is **one pre-existing, unrelated** type error:
+  `useThreeGraph.ts:1786` — `RefObject<HTMLDivElement | null>` vs
+  `RefObject<HTMLDivElement>`, a React-19 ref-typing issue that predates all of
+  this work (the fork pins React 19) and that `tsc -b` / `npm run build` would
+  also hit. Untouched by any change here — flagged so you can decide whether to
+  migrate those refs.
+
 ## Validation
 
 | Check | Result |
@@ -116,7 +146,7 @@ so tests could resolve the `gitnexus-shared` package — it's gitignored and
 harmless, and disappears when you remove the worktree.
 
 ## Suggested next steps
-1. Cherry-pick the three changes into your real branch (independent, low-risk): `git cherry-pick 6ac663ec ba197e54 fcb49b30`.
+1. Cherry-pick the four changes into your real branch (independent, low-risk): `git cherry-pick 6ac663ec ba197e54 fcb49b30 7f93e190`.
 2. Visually confirm the 3D **layered** depth mode — the one thing I couldn't verify: run the web app → switch to 3D → click the Layers toggle. Tune the stratum pull (`useThreeGraph` forceZ strength `0.16`) or spacing (`graph-depth.ts` `depthLevelToZ`) to taste.
 3. When you have a supervised window, run the merge per `INTEGRATION-PLAYBOOK.md` — lead with the storage/read-only cluster and the true-incremental commit. Note: `graph-depth.ts` is net-new (no conflict), but `GraphCanvas.tsx` / `useThreeGraph.ts` / `graph-render-model.ts` are merge hotspots, so this feature's edits will need re-applying onto upstream's renderer.
-4. Further graph capability/resolution ideas (not yet built): per-stratum labels + distance-based level-of-detail in 3D, a "hotspot" composite colour mode (complexity × churn × impact), and edge bundling by relation type.
+4. Further graph capability/resolution ideas (not yet built): per-stratum labels + distance-based level-of-detail in 3D, and edge bundling by relation type.
