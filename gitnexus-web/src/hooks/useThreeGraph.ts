@@ -1385,10 +1385,16 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       // (labels just enabled / graph reload).
       if (reselect || nowMs - labelSelectAtRef.current >= LABEL_REFRESH_MS) {
         labelSelectAtRef.current = nowMs;
+        const hoveredId = hoveredNodeRef.current;
+        const selectedId = selectedNodeRef.current;
+        let hoveredIndex = -1;
+        let selectedIndex = -1;
         const candidates: LabelCandidate[] = [];
         for (let i = 0; i < nodes.length; i += 1) {
           const node = nodes[i]!;
           if (node.attributes.hidden) continue;
+          if (node.id === hoveredId) hoveredIndex = i;
+          if (node.id === selectedId) selectedIndex = i;
           const dx = (node.x ?? 0) - camera.position.x;
           const dy = (node.y ?? 0) - camera.position.y;
           const dz = (node.z ?? 0) - camera.position.z;
@@ -1401,7 +1407,18 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
             distanceSq: dx * dx + dy * dy + dz * dz,
           });
         }
-        labelChosen = selectLabelIndices(candidates, labelPool.length);
+        // Always label the focused node(s): the LOD set favours containers, so
+        // the specific (often leaf) node you select or hover would otherwise stay
+        // nameless. Pin them first, then fill remaining slots with the LOD picks.
+        const chosen: number[] = [];
+        for (const pinned of [selectedIndex, hoveredIndex]) {
+          if (pinned >= 0 && !chosen.includes(pinned)) chosen.push(pinned);
+        }
+        for (const idx of selectLabelIndices(candidates, labelPool.length)) {
+          if (chosen.length >= labelPool.length) break;
+          if (!chosen.includes(idx)) chosen.push(idx);
+        }
+        labelChosen = chosen;
       }
       // Reposition the chosen labels every call (cheap, O(pool)=36) so they stay
       // glued to nodes as the layout moves them between reselections.
