@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import Graph from 'graphology';
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import {
   forceCenter,
   forceCollide,
@@ -18,6 +19,12 @@ import {
 } from 'd3-force-3d';
 import { SigmaEdgeAttributes, SigmaNodeAttributes } from '../lib/graph-adapter';
 import { GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
+import {
+  labelImportance,
+  selectLabelIndices,
+  truncateLabel,
+  type LabelCandidate,
+} from '../lib/graph-labels';
 import {
   brightenColor,
   mixColor,
@@ -51,6 +58,7 @@ interface UseThreeGraphOptions {
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
   perfObserver?: GraphPerfObserver;
+  showLabels?: boolean;
 }
 
 interface UseThreeGraphReturn {
@@ -321,6 +329,9 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const labelRendererRef = useRef<CSS2DRenderer | null>(null);
+  const labelPoolRef = useRef<CSS2DObject[]>([]);
+  const labelSelectAtRef = useRef<number>(0);
   const arcballRef = useRef<ArcballWithTarget | null>(null);
   const pointerLockRef = useRef<PointerLockControls | null>(null);
   const nodeMeshRef = useRef<THREE.InstancedMesh | null>(null);
@@ -367,6 +378,8 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
   useEffect(() => {
     optionsRef.current = options;
     isActiveRef.current = options.isActive ?? true;
+    // Repaint so 3D label visibility tracks the showLabels toggle promptly.
+    renderPendingRef.current = true;
   }, [options]);
 
   const isRendererActive = useCallback(() => isActiveRef.current, []);
@@ -1330,6 +1343,73 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
+    // ── CSS2D label overlay (opt-in, level-of-detail) ──────────────────
+    // A transparent HTML layer over the WebGL canvas renders crisp text for a
+    // small, distance-prioritised subset of nodes (graph-labels.ts). The layer
+    // is pointer-transparent so all interaction passes through to the canvas.
+    const MAX_LABELS_3D = 36;
+    const LABEL_REFRESH_MS = 140;
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.domElement.style.position = 'absolute';
+    labelRenderer.domElement.style.top = '0';
+    labelRenderer.domElement.style.left = '0';
+    labelRenderer.domElement.style.width = '100%';
+    labelRenderer.domElement.style.height = '100%';
+    labelRenderer.domElement.style.pointerEvents = 'none';
+    labelRenderer.domElement.style.overflow = 'hidden';
+    container.appendChild(labelRenderer.domElement);
+    labelRendererRef.current = labelRenderer;
+
+    const labelPool: CSS2DObject[] = [];
+    for (let i = 0; i < MAX_LABELS_3D; i += 1) {
+      const element = document.createElement('div');
+      element.style.cssText =
+        'padding:2px 6px;border-radius:6px;font:500 11px/1.2 ui-sans-serif,system-ui,sans-serif;' +
+        'color:#e2e8f0;background:rgba(15,23,42,0.72);border:1px solid rgba(148,163,184,0.25);' +
+        'white-space:nowrap;pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,0.6);';
+      const labelObject = new CSS2DObject(element);
+      labelObject.visible = false;
+      labelObject.center.set(0.5, 1); // anchor bottom-centre → label sits above the node
+      scene.add(labelObject);
+      labelPool.push(labelObject);
+    }
+    labelPoolRef.current = labelPool;
+
+    const refreshLabels = (nowMs: number, force: boolean): void => {
+      if (nowMs - labelSelectAtRef.current < LABEL_REFRESH_MS && !force) return;
+      labelSelectAtRef.current = nowMs;
+
+      const nodes = nodesRef.current;
+      const candidates: LabelCandidate[] = [];
+      for (let i = 0; i < nodes.length; i += 1) {
+        const node = nodes[i]!;
+        if (node.attributes.hidden) continue;
+        const dx = (node.x ?? 0) - camera.position.x;
+        const dy = (node.y ?? 0) - camera.position.y;
+        const dz = (node.z ?? 0) - camera.position.z;
+        candidates.push({
+          index: i,
+          importance: labelImportance(
+            node.attributes.nodeType,
+            node.attributes.dependencyCount ?? 0,
+          ),
+          distanceSq: dx * dx + dy * dy + dz * dz,
+        });
+      }
+      const chosen = selectLabelIndices(candidates, labelPool.length);
+      for (let i = 0; i < labelPool.length; i += 1) {
+        const labelObject = labelPool[i]!;
+        if (i < chosen.length) {
+          const node = nodes[chosen[i]!]!;
+          labelObject.element.textContent = truncateLabel(node.attributes.label ?? '');
+          labelObject.position.set(node.x ?? 0, node.y ?? 0, node.z ?? 0);
+          labelObject.visible = true;
+        } else {
+          labelObject.visible = false;
+        }
+      }
+    };
+
     const applyPixelRatio = (cap: number, label: string) => {
       const nextPixelRatio = readCappedPixelRatio(cap);
       if (Math.abs(nextPixelRatio - activePixelRatio) < 0.01) return;
@@ -1412,6 +1492,7 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         usingInteractionPixelRatio ? 'resize:interaction' : 'resize:full',
       );
       renderer.setSize(width, height, false);
+      labelRenderer.setSize(width, height);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       arcball.update();
@@ -1695,6 +1776,12 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       if (renderPendingRef.current || cameraMoved || layoutRunningRef.current) {
         renderPendingRef.current = false;
         renderer.render(scene, camera);
+        if (optionsRef.current.showLabels) {
+          refreshLabels(time, cameraMoved || layoutRunningRef.current);
+        } else {
+          for (const labelObject of labelPool) labelObject.visible = false;
+        }
+        labelRenderer.render(scene, camera);
       }
     };
 
@@ -1739,6 +1826,12 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       pointerLock.dispose();
       renderer.dispose();
       container.removeChild(renderer.domElement);
+      for (const labelObject of labelPool) scene.remove(labelObject);
+      labelPoolRef.current = [];
+      if (labelRenderer.domElement.parentNode === container) {
+        container.removeChild(labelRenderer.domElement);
+      }
+      labelRendererRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
       rendererRef.current = null;

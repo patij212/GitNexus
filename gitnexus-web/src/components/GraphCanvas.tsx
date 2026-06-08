@@ -30,6 +30,7 @@ import {
   Navigation,
   Layers,
   Flame,
+  Type,
   Orbit,
   Square,
   Box,
@@ -335,6 +336,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const [graphDetailMode, setGraphDetailMode] = useState<GraphDetailMode | null>('structural');
     const [graphColorMode, setGraphColorMode] = useState<GraphColorMode>('structure');
     const [graphDepthMode, setGraphDepthMode] = useState<GraphDepthMode>('organic');
+    const [showLabels, setShowLabels] = useState(false);
     const [contextCopied, setContextCopied] = useState(false);
     const [graphChangeSummary, setGraphChangeSummary] = useState<GraphDiff | null>(null);
     const [graphChangeAnimations, setGraphChangeAnimations] = useState<Map<string, NodeAnimation>>(
@@ -716,6 +718,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       animatedNodes: effectiveAnimatedNodes,
       visibleEdgeTypes: activeVisibleEdgeTypes,
       perfObserver,
+      showLabels,
     });
 
     const is3DMode = graphViewMode === '3d';
@@ -1998,6 +2001,22 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
                 aria-pressed={graphDepthMode === 'layered'}
               >
                 <Layers className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setShowLabels((current) => !current)}
+                className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${
+                  showLabels
+                    ? 'border-cyan-400/40 bg-cyan-500/15 text-cyan-200'
+                    : 'border-border-subtle bg-elevated text-text-secondary hover:bg-hover hover:text-text-primary'
+                }`}
+                title={
+                  showLabels
+                    ? 'Node labels: on (click to hide)'
+                    : 'Node labels: off (click to show)'
+                }
+                aria-pressed={showLabels}
+              >
+                <Type className="h-4 w-4" />
               </button>
             </>
           )}
