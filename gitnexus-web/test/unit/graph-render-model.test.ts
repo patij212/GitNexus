@@ -41,6 +41,33 @@ describe('buildGraphRenderModel', () => {
     expect(Array.from(first.edgeCurveMultipliers)).toEqual(Array.from(second.edgeCurveMultipliers));
   });
 
+  it('layered depthMode places nodes on architectural strata; organic leaves Z unset', () => {
+    const graph = createDeterministicKnowledgeGraphFixture({ fileCount: 2, functionsPerFile: 3 });
+
+    // Default (organic): the 3D Z stays a hook-free hash scatter — no semantic Z.
+    const organic = buildGraphRenderModel(graph);
+    organic.nodes.forEach((node) => {
+      expect(node.attributes.z).toBeUndefined();
+      expect(node.attributes.depthZ).toBeUndefined();
+    });
+
+    // Layered: every node gets a concrete Z and a stratum force-target.
+    const layered = buildGraphRenderModel(graph, undefined, { depthMode: 'layered' });
+    layered.nodes.forEach((node) => {
+      expect(typeof node.attributes.z).toBe('number');
+      expect(typeof node.attributes.depthZ).toBe('number');
+    });
+
+    // Files sit in front of (greater Z than) the functions they contain, and all
+    // nodes of one kind share a single stratum target (jitter only moves `z`).
+    const fileDepth = layered.nodes.find((n) => n.attributes.nodeType === 'File')!.attributes
+      .depthZ!;
+    const fnNodes = layered.nodes.filter((n) => n.attributes.nodeType === 'Function');
+    const fnDepth = fnNodes[0]!.attributes.depthZ!;
+    expect(fileDepth).toBeGreaterThan(fnDepth);
+    fnNodes.forEach((n) => expect(n.attributes.depthZ).toBeCloseTo(fnDepth));
+  });
+
   it('round-trips stable model indexes, colors, and curvature into graphology attrs', () => {
     const graph = createDeterministicKnowledgeGraphFixture({ fileCount: 2, functionsPerFile: 2 });
     const model = buildGraphRenderModel(graph);

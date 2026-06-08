@@ -873,7 +873,16 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       .force('center', forceCenter<Graph3DNode>(0, 0, 0))
       .force('x', forceX<Graph3DNode>(0).strength(0.012))
       .force('y', forceY<Graph3DNode>(0).strength(0.012))
-      .force('z', forceZ<Graph3DNode>(0).strength(0.012))
+      // Z force: in `organic` depthMode no node carries `depthZ`, so this is
+      // identical to the original forceZ(0).strength(0.012). In `layered` mode
+      // each node targets its architectural-depth stratum with a firmer pull,
+      // so the hierarchy holds as readable layers against charge repulsion.
+      .force(
+        'z',
+        forceZ<Graph3DNode>((node) => node.attributes.depthZ ?? 0).strength((node) =>
+          node.attributes.depthZ === undefined ? 0.012 : 0.16,
+        ),
+      )
       .alpha(1)
       .alphaMin(0.001)
       .alphaDecay(getLayoutAlphaDecay(nodeCount))

@@ -11,6 +11,7 @@ import {
   type GraphColorMode,
 } from './constants';
 import type { GraphologyOptions, SigmaEdgeAttributes, SigmaNodeAttributes } from './graph-adapter';
+import { depthLevelToZ, depthStratumGap, getNodeDepthLevel } from './graph-depth';
 
 export interface GraphRenderNode {
   id: string;
@@ -401,6 +402,7 @@ export const buildGraphRenderModel = (
 ): GraphRenderModel => {
   const nodeCount = knowledgeGraph.nodes.length;
   const colorMode = options.colorMode ?? 'type';
+  const depthMode = options.depthMode ?? 'organic';
   const dependencyCounts = new Map<string, number>();
 
   knowledgeGraph.relationships.forEach((relationship) => {
@@ -522,7 +524,17 @@ export const buildGraphRenderModel = (
     });
     const communityOffset =
       communityIndex === undefined ? 0 : ((communityIndex % 9) - 4) * zSpread * 0.055;
-    const z = (hashToUnit(node.id) - 0.5) * zSpread + communityOffset;
+    let z: number;
+    if (depthMode === 'layered') {
+      // Place the node on its architectural-depth stratum, with a small
+      // deterministic jitter so a layer reads as a thick band, not a flat plane.
+      const depthZ = depthLevelToZ(getNodeDepthLevel(node.label), zSpread);
+      z = depthZ + centeredUnit(`${node.id}:depth`) * depthStratumGap(zSpread) * 0.6;
+      attributes.z = z;
+      attributes.depthZ = depthZ;
+    } else {
+      z = (hashToUnit(node.id) - 0.5) * zSpread + communityOffset;
+    }
 
     nodeIdToIndex.set(node.id, index);
     nodeIds.push(node.id);

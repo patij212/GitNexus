@@ -28,6 +28,7 @@ import {
   Lightbulb,
   LightbulbOff,
   Navigation,
+  Layers,
   Orbit,
   Square,
   Box,
@@ -42,6 +43,7 @@ import {
   applyGraphVisibilityFilter,
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
+  type GraphDepthMode,
 } from '../lib/graph-adapter';
 import { resolveAgentLensFocus, type AgentLensFocusSource } from '../lib/agent-lens-focus';
 import { describeGraphDiff, diffKnowledgeGraphs, type GraphDiff } from '../lib/graph-diff';
@@ -321,6 +323,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>('2d');
     const [graphDetailMode, setGraphDetailMode] = useState<GraphDetailMode | null>('structural');
     const [graphColorMode, setGraphColorMode] = useState<GraphColorMode>('structure');
+    const [graphDepthMode, setGraphDepthMode] = useState<GraphDepthMode>('organic');
     const [contextCopied, setContextCopied] = useState(false);
     const [graphChangeSummary, setGraphChangeSummary] = useState<GraphDiff | null>(null);
     const [graphChangeAnimations, setGraphChangeAnimations] = useState<Map<string, NodeAnimation>>(
@@ -799,6 +802,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         const targetGraph = knowledgeGraphToGraphology(renderGraph, communityMemberships, {
           colorMode: graphColorMode,
+          depthMode: graphDepthMode,
           impactNodeIds: effectiveBlastRadiusNodeIds,
           agentFocusNodeIds: effectiveHighlightedNodeIds,
           citationNodeIds: activeAICitationNodeIds,
@@ -841,6 +845,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         effectiveBlastRadiusNodeIds,
         effectiveHighlightedNodeIds,
         graphColorMode,
+        graphDepthMode,
         perfObserver,
         renderGraph,
         renderNodeById,
@@ -1959,6 +1964,24 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
                 title="First-Person Camera"
               >
                 <Navigation className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() =>
+                  setGraphDepthMode((current) => (current === 'layered' ? 'organic' : 'layered'))
+                }
+                className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${
+                  graphDepthMode === 'layered'
+                    ? 'border-cyan-400/40 bg-cyan-500/15 text-cyan-200'
+                    : 'border-border-subtle bg-elevated text-text-secondary hover:bg-hover hover:text-text-primary'
+                }`}
+                title={
+                  graphDepthMode === 'layered'
+                    ? 'Z depth: architectural layers (click for organic)'
+                    : 'Z depth: organic (click for architectural layers)'
+                }
+                aria-pressed={graphDepthMode === 'layered'}
+              >
+                <Layers className="h-4 w-4" />
               </button>
             </>
           )}

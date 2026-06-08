@@ -11,10 +11,18 @@ import {
 
 export type { GraphColorMode } from './constants';
 
+/**
+ * Z-axis layout for the 3D view. `organic` (default) scatters Z by node-id hash
+ * (the original behavior). `layered` places nodes on architectural-depth strata
+ * (see graph-depth.ts) so the third dimension reads as software hierarchy.
+ */
+export type GraphDepthMode = 'organic' | 'layered';
+
 export interface SigmaNodeAttributes {
   x: number;
   y: number;
   z?: number;
+  depthZ?: number; // layered depthMode: target Z stratum for the 3D force layout
   size: number;
   color: string;
   baseColor?: string;
@@ -53,6 +61,7 @@ export interface SigmaEdgeAttributes {
 
 export interface GraphologyOptions {
   colorMode?: GraphColorMode;
+  depthMode?: GraphDepthMode;
   impactNodeIds?: Set<string>;
   agentFocusNodeIds?: Set<string>;
   citationNodeIds?: Set<string>;
